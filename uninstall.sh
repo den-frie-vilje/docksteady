@@ -20,9 +20,10 @@ else
     fi
 fi
 
-for bin in "$HOME/.local/bin/docksteady"; do
-    [ -f "$bin" ] && rm -f "$bin" && echo "removed $bin"
-done
+if [ -f "$HOME/.local/bin/docksteady" ]; then
+    rm -f "$HOME/.local/bin/docksteady"
+    echo "removed $HOME/.local/bin/docksteady"
+fi
 
 if command -v docksteady >/dev/null 2>&1; then
     echo "a docksteady remains on PATH (probably Homebrew): brew uninstall docksteady"

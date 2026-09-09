@@ -34,6 +34,8 @@ windows, triggers surviving uninstall), so the gate has earned its place.
 2. Commit with a standalone message (what was decided and why, not just
    what changed), tag `vX.Y.Z`, push branch and tag, create the GitHub
    release with upgrade notes for existing users.
+   After pushing, confirm the Actions run is green (`gh run list`); the
+   pipeline was once red for six straight pushes because nobody looked.
 3. `curl -sL .../archive/refs/tags/vX.Y.Z.tar.gz | shasum -a 256`, then
    update `url` and `sha256` in
    `den-frie-vilje/homebrew-tap/Formula/docksteady.rb`; commit and push.
