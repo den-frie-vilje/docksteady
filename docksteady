@@ -82,7 +82,7 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-VERSION = "0.3.0"
+VERSION = "0.3.1"
 IOREG = "/usr/sbin/ioreg"
 CONFIG_DIR = Path.home() / ".config" / "docksteady"
 CONFIG_FILE = CONFIG_DIR / "config.json"
@@ -759,7 +759,11 @@ def install_agent(poll_seconds):
     with open(AGENT_PLIST, "wb") as fh:
         plistlib.dump({
             "Label": AGENT_LABEL,
-            "ProgramArguments": [me, "apply", "--retries", "6", "--quiet"],
+            # existence-guarded so a bare `brew uninstall` without disarm
+            # leaves a silent no-op, not a binary-not-found every 45s
+            "ProgramArguments": [
+                "/bin/sh", "-c",
+                f'[ -x "{me}" ] || exit 0; exec "{me}" apply --retries 6 --quiet'],
             "RunAtLoad": True,
             "StartInterval": poll_seconds,
         }, fh)
@@ -774,7 +778,7 @@ def install_agent(poll_seconds):
 
 def install_wake_hook(me):
     block = (f"{HOOK_BEGIN}\n"
-             f'( "{me}" apply --retries 6 --quiet ) '
+             f'( [ -x "{me}" ] && "{me}" apply --retries 6 --quiet ) '
              f'>/dev/null 2>>"$HOME/Library/Logs/docksteady.log" &\n'
              f"{HOOK_END}\n")
     text = WAKEUP.read_text() if WAKEUP.exists() else "#!/bin/sh\n"

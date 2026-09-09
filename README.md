@@ -213,6 +213,11 @@ brew uninstall docksteady
 
 Installed from a clone: run `./uninstall.sh`, which does both.
 
+If you forget `disarm`, nothing breaks: the schedule and wake trigger check
+that docksteady is still installed before running, and stay silent when it
+isn't. Run `docksteady disarm` whenever you notice, or leave them; they do
+nothing.
+
 If you no longer want the helpers either: `brew services stop sleepwatcher`,
 then `brew uninstall sleepwatcher displayplacer`. Settings and the log stay
 behind; remove `~/.config/docksteady` and `~/Library/Logs/docksteady.log`
