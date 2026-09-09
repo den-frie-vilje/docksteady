@@ -8,13 +8,16 @@ LABEL="dk.denfrievilje.docksteady"
 PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
 WAKEUP="$HOME/.wakeup"
 
-launchctl bootout "gui/$(id -u)/$LABEL" 2>/dev/null || true
-rm -f "$PLIST"
-echo "LaunchAgent removed"
-
-if [ -f "$WAKEUP" ] && grep -q "docksteady wake hook" "$WAKEUP"; then
-    sed -i '' '/# >>> docksteady wake hook >>>/,/# <<< docksteady wake hook <<</d' "$WAKEUP"
-    echo "wake hook removed from $WAKEUP"
+if command -v docksteady >/dev/null 2>&1; then
+    docksteady disarm
+else
+    launchctl bootout "gui/$(id -u)/$LABEL" 2>/dev/null || true
+    rm -f "$PLIST"
+    echo "LaunchAgent removed"
+    if [ -f "$WAKEUP" ] && grep -q "docksteady wake hook" "$WAKEUP"; then
+        sed -i '' '/# >>> docksteady wake hook >>>/,/# <<< docksteady wake hook <<</d' "$WAKEUP"
+        echo "wake hook removed from $WAKEUP"
+    fi
 fi
 
 for bin in "$HOME/.local/bin/docksteady"; do

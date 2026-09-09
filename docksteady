@@ -8,9 +8,11 @@ every arrangement store stays self-consistent while the physical panels
 show swapped content and mirrored geometry. docksteady grounds each
 window-server display in its panel's immutable factory serial (readable
 per SoC display pipe in IOKit, bridged to the window server through the
-CoreDisplay info dictionary) and enforces the intended arrangement: the
-two externals side by side with a central seam, the laptop screen centred
-underneath.
+CoreDisplay info dictionary) and enforces the arrangement you blessed:
+init and save record your actual origins, so any geometry of the two
+panels plus the laptop is replayed exactly; configs without recorded
+origins get the default shape (externals side by side with a central
+seam, laptop centred underneath).
 
 Commands:
   init    detect the attached panels, choose which is left and right,
@@ -32,9 +34,14 @@ Commands:
           move every standard window on one external to the same spot on
           the other, via the Accessibility API. The content-level
           recovery after an identity flip. Covers windows on the
-          currently visible Space of each display; full-screen Spaces
-          and other desktops are dragged across in Mission Control.
-          Needs Accessibility permission for the invoking terminal.
+          currently visible Space of each display; with
+          --with-fullscreen (or config swap_fullscreen for the dialog
+          button) full-screen windows are also carried across in tiers:
+          recorded, un-fullscreened, swapped as standard windows, then
+          re-fullscreened one by one so each lands on its new display.
+          Split View pairs come back as separate full-screen Spaces.
+          Other desktops are dragged across in Mission Control. Needs
+          Accessibility permission for the invoking context.
   save    bless the current arrangement as the good one.
   status  print the parsed current state.
   probe FRAGMENT
@@ -42,9 +49,15 @@ Commands:
           window count, and window geometry, through the same
           python-to-osascript chain swap-windows uses.
   pause [minutes]
-          suspend automatic enforcement (default 60 min); resume lifts
-          it early. Enforcement also skips while System Settings is the
-          frontmost app, so manual drags are never fought.
+          suspend automatic enforcement (default 60 min). Enforcement
+          also skips while System Settings is the frontmost app, so
+          manual drags are never fought.
+  resume  lift a pause early.
+  notify banner|dialog|off
+          set how enforcement announces itself, without editing the
+          config file by hand.
+  disarm  unload the LaunchAgent and remove the wake hook (run before
+          uninstalling); init re-arms them.
   version print the version.
 
 docksteady acts only when both configured panels are attached (checked by
@@ -69,7 +82,7 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-VERSION = "0.2.0"
+VERSION = "0.3.0"
 IOREG = "/usr/sbin/ioreg"
 CONFIG_DIR = Path.home() / ".config" / "docksteady"
 CONFIG_FILE = CONFIG_DIR / "config.json"
@@ -299,12 +312,33 @@ def pick_sides(cfg, exts, smap):
     return left, right, "current positions (no matching saved state)"
 
 
-def targets(mac, left, right):
+def targets(cfg, mac, left, right):
+    """Target origin per display. A blessing recorded by init or save
+    carries the actual arranged origins keyed by serial, so any geometry
+    is replayed exactly; without them (older configs) the default shape
+    is computed: externals side by side, seam centred over the laptop.
+    Stored origins go stale if resolutions or scaling change; rerun
+    docksteady save after such changes."""
+    saved = cfg.get("origins") or {}
+    if all(k in saved for k in (cfg["left"], cfg["right"], "mac")):
+        return {
+            mac["persistent"]: tuple(saved["mac"]),
+            left["persistent"]: tuple(saved[cfg["left"]]),
+            right["persistent"]: tuple(saved[cfg["right"]]),
+        }
     seam = mac["w"] // 2
     return {
         mac["persistent"]: (0, 0),
         left["persistent"]: (seam - left["w"], -left["h"]),
         right["persistent"]: (seam, -right["h"]),
+    }
+
+
+def record_origins(cfg, mac, left, right):
+    cfg["origins"] = {
+        "mac": [mac.get("x", 0), mac.get("y", 0)],
+        cfg["left"]: [left.get("x"), left.get("y")],
+        cfg["right"]: [right.get("x"), right.get("y")],
     }
 
 
@@ -346,7 +380,8 @@ def notify(cfg, text):
         return 0
     if "button returned:Swap windows" in r.stdout and "gave up:true" not in r.stdout:
         log("dialog: swapping windows at the user's request")
-        return cmd_swap_windows(dry=False)
+        return cmd_swap_windows(dry=False,
+                                with_fullscreen=cfg.get("swap_fullscreen", False))
     return 0
 
 
@@ -391,7 +426,7 @@ def cmd_apply(retries, dry):
             continue
         smap = cg_serial_map(pipes)
         left, right, source = pick_sides(cfg, exts, smap)
-        tgt = targets(mac, left, right)
+        tgt = targets(cfg, mac, left, right)
         current = {s["persistent"]: (s.get("x"), s.get("y")) for s in (mac, left, right)}
         if current == tgt:
             log_info(f"attempt {attempt}: layout correct (sides from {source})")
@@ -419,6 +454,10 @@ def cmd_swap(dry):
     smap = cg_serial_map(pipes)
     if set(smap.values()) == {cfg["left"], cfg["right"]}:
         cfg["left"], cfg["right"] = cfg["right"], cfg["left"]
+        origins = cfg.get("origins") or {}
+        if cfg["left"] in origins and cfg["right"] in origins:
+            origins[cfg["left"]], origins[cfg["right"]] = (
+                origins[cfg["right"]], origins[cfg["left"]])
         if not dry:
             save_config(cfg)
         left, right, _ = pick_sides(cfg, exts, smap)
@@ -428,7 +467,7 @@ def cmd_swap(dry):
         left, right = right, left
         log(f"swap: serial bridge unavailable; exchanging frames only "
             f"(previous sides from {source}); blessing unchanged")
-    if run_displayplacer(dp, mac, left, right, targets(mac, left, right), dry):
+    if run_displayplacer(dp, mac, left, right, targets(cfg, mac, left, right), dry):
         if not dry:
             snapshot_state(mac, left, right)
         return 0
@@ -446,9 +485,11 @@ def cmd_save():
     ls, rs = smap.get(left["persistent"]), smap.get(right["persistent"])
     if ls and rs:
         cfg["left"], cfg["right"] = ls, rs
+        record_origins(cfg, mac, left, right)
         save_config(cfg)
     snapshot_state(mac, left, right)
-    log(f"saved: left={ls or left['persistent']} right={rs or right['persistent']}")
+    log(f"saved: left={ls or left['persistent']} right={rs or right['persistent']} "
+        f"origins={'recorded' if ls and rs else 'unchanged'}")
     return 0
 
 
@@ -473,7 +514,67 @@ def cmd_status():
     return 0
 
 
-def cmd_swap_windows(dry):
+def record_and_exit_fullscreen(y0, y1):
+    """Phase one of the full-screen tier: find full-screen windows on the
+    managed displays (their AX position equals the display origin, so the
+    y band identifies them), exit full screen, and return (app, title)
+    pairs for later restoration."""
+    script = f'''
+tell application "System Events"
+  set out to ""
+  repeat with proc in (application processes whose visible is true)
+    try
+      repeat with w in windows of proc
+        try
+          if value of attribute "AXFullScreen" of w is true then
+            set {{wx, wy}} to position of w
+            if wy >= {y0} and wy < {y1} then
+              set out to out & (name of proc) & tab & (name of w) & linefeed
+              set value of attribute "AXFullScreen" of w to false
+              delay 1.0
+            end if
+          end if
+        end try
+      end repeat
+    end try
+  end repeat
+  return out
+end tell'''
+    r = subprocess.run(["/usr/bin/osascript", "-e", script],
+                       capture_output=True, text=True, timeout=180)
+    pairs = []
+    for line in r.stdout.splitlines():
+        if "\t" in line:
+            app, title = line.split("\t", 1)
+            pairs.append((app, title))
+    return pairs
+
+
+def restore_fullscreen(pairs):
+    """Phase three: re-fullscreen each recorded window, one at a time so
+    Space creation never races. Each window fullscreens onto the display
+    that now contains it, which is the other monitor after the swap."""
+    esc = lambda s: s.replace("\\", "\\\\").replace('"', '\\"')
+    restored = 0
+    for app, title in pairs:
+        script = f'''
+tell application "System Events"
+  set w to first window of (first application process whose name is "{esc(app)}") ¬
+    whose name is "{esc(title)}"
+  set value of attribute "AXFullScreen" of w to true
+  delay 1.5
+  return "ok"
+end tell'''
+        r = subprocess.run(["/usr/bin/osascript", "-e", script],
+                           capture_output=True, text=True, timeout=60)
+        if r.returncode == 0:
+            restored += 1
+        else:
+            log(f"swap-windows: could not re-fullscreen {app} / {title[:40]}")
+    return restored
+
+
+def cmd_swap_windows(dry, with_fullscreen=False):
     cfg, dp = require_setup()
     mac, exts = parse_list(dp)
     pipes = pipe_map({cfg["left"], cfg["right"]})
@@ -482,7 +583,9 @@ def cmd_swap_windows(dry):
     left, right = sorted(exts, key=lambda e: e["x"])
     dx = right["x"] - left["x"]
     x0, x1, x2 = left["x"], right["x"], right["x"] + right["w"]
-    y0, y1 = left["y"], left["y"] + left["h"]
+    # union band over both panels, so arbitrary height offsets are covered
+    y0 = min(left["y"], right["y"])
+    y1 = max(left["y"] + left["h"], right["y"] + right["h"])
     if dry:
         log(f"dry-run swap-windows: left=[{x0},{x1}) right=[{x1},{x2}) "
             f"y=[{y0},{y1}) dx={dx}")
@@ -497,6 +600,13 @@ def cmd_swap_windows(dry):
             f"({probe.stderr.strip()[:160]}); grant Accessibility permission "
             "in System Settings > Privacy & Security, then rerun")
         return 1
+    fs_pairs = []
+    if with_fullscreen:
+        fs_pairs = record_and_exit_fullscreen(y0, y1)
+        if fs_pairs:
+            log(f"swap-windows: {len(fs_pairs)} full-screen window(s) "
+                "recorded and un-fullscreened")
+            time.sleep(2)
     script = f'''
 tell application "System Events"
   set movedCount to 0
@@ -504,11 +614,15 @@ tell application "System Events"
     try
       repeat with w in windows of proc
         try
+          set sr to ""
+          try
+            set sr to subrole of w as text
+          end try
           set {{wx, wy}} to position of w
           set {{ww, wh}} to size of w
           set midX to wx + ww / 2
           set midY to wy + wh / 2
-          if midY >= {y0} and midY < {y1} then
+          if sr is "AXStandardWindow" and midY >= {y0} and midY < {y1} then
             if midX >= {x0} and midX < {x1} then
               set position of w to {{wx + {dx}, wy}}
               set movedCount to movedCount + 1
@@ -533,6 +647,10 @@ end tell'''
         log(f"swap-windows failed ({r.returncode}): {r.stderr.strip()[:300]}")
         return 1
     log(f"swap-windows: moved {r.stdout.strip()} windows between the externals")
+    if fs_pairs:
+        restored = restore_fullscreen(fs_pairs)
+        log(f"swap-windows: re-fullscreened {restored}/{len(fs_pairs)} "
+            "window(s) on their new displays")
     return 0
 
 
@@ -565,6 +683,44 @@ end tell'''
     if r.returncode != 0:
         print(f"probe failed ({r.returncode}): {r.stderr.strip()[:300]}")
         return 1
+    return 0
+
+
+def cmd_set_notify(value):
+    if value not in ("banner", "dialog", "off"):
+        print("usage: docksteady notify banner|dialog|off")
+        return 1
+    cfg = load_config()
+    if not cfg:
+        print("docksteady is not configured yet: run `docksteady init`")
+        return 1
+    cfg["notify"] = value
+    save_config(cfg)
+    print(f"notify mode set to {value}")
+    return 0
+
+
+def cmd_disarm():
+    """Disarm the automatic triggers: unload and remove the LaunchAgent
+    and take the wake hook out of ~/.wakeup. Run before uninstalling.
+    Configuration and log stay; docksteady init re-arms."""
+    uid = subprocess.run(["/usr/bin/id", "-u"], capture_output=True,
+                         text=True).stdout.strip()
+    subprocess.run(["/bin/launchctl", "bootout", f"gui/{uid}/{AGENT_LABEL}"],
+                   capture_output=True)
+    try:
+        AGENT_PLIST.unlink()
+        print(f"LaunchAgent removed: {AGENT_PLIST}")
+    except OSError:
+        print("LaunchAgent was not installed")
+    if WAKEUP.exists():
+        text = WAKEUP.read_text()
+        if HOOK_BEGIN in text:
+            text = re.sub(re.escape(HOOK_BEGIN) + r".*?" + re.escape(HOOK_END) + r"\n?",
+                          "", text, flags=re.S)
+            WAKEUP.write_text(text)
+            print(f"wake hook removed from {WAKEUP}")
+    print("triggers disarmed; docksteady init re-arms them")
     return 0
 
 
@@ -638,16 +794,17 @@ def sleepwatcher_running():
 
 def cmd_init(argv):
     left_arg = right_arg = None
-    poll = 45
     yes = "--yes" in argv
     if "--left" in argv:
         left_arg = argv[argv.index("--left") + 1]
     if "--right" in argv:
         right_arg = argv[argv.index("--right") + 1]
+    cfg = load_config() or {}
+    poll = int(cfg.get("poll_seconds", 45))
     if "--poll" in argv:
         poll = int(argv[argv.index("--poll") + 1])
 
-    dp = displayplacer_path(load_config() or {})
+    dp = displayplacer_path(cfg)
     if not dp:
         print("displayplacer is required:\n"
               "  brew install jakehilborn/jakehilborn/displayplacer")
@@ -688,9 +845,13 @@ def cmd_init(argv):
                   "are backwards after init, run docksteady swap once.")
             return 1
 
-    save_config({"left": left_serial, "right": right_serial,
-                 "poll_seconds": poll, "notify": True})
-    left, right, _ = pick_sides(load_config(), exts, smap)
+    # merge into the existing config so a rerun of init never wipes
+    # notify, dialog_timeout, or other hand-set keys
+    cfg.update({"left": left_serial, "right": right_serial, "poll_seconds": poll})
+    cfg.setdefault("notify", "banner")
+    left, right, _ = pick_sides(cfg, exts, smap)
+    record_origins(cfg, mac, left, right)
+    save_config(cfg)
     snapshot_state(mac, left, right)
     ok, me = install_agent(poll)
     install_wake_hook(me)
@@ -731,6 +892,10 @@ def main():
         return cmd_pause(int(args[1]) if len(args) > 1 else 60)
     if cmd == "resume":
         return cmd_resume()
+    if cmd == "notify":
+        return cmd_set_notify(args[1] if len(args) > 1 else "")
+    if cmd == "disarm":
+        return cmd_disarm()
 
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
     with open(LOCK_FILE, "w") as lock:
@@ -744,7 +909,7 @@ def main():
         if cmd == "swap":
             return cmd_swap(dry)
         if cmd == "swap-windows":
-            return cmd_swap_windows(dry)
+            return cmd_swap_windows(dry, with_fullscreen="--with-fullscreen" in args)
         if cmd == "save":
             return cmd_save()
         print(__doc__)
