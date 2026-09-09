@@ -59,13 +59,14 @@ import fcntl
 import json
 import plistlib
 import re
+import shutil
 import subprocess
 import sys
 import time
 from datetime import datetime
 from pathlib import Path
 
-VERSION = "0.1.0"
+VERSION = "0.1.1"
 IOREG = "/usr/sbin/ioreg"
 CONFIG_DIR = Path.home() / ".config" / "docksteady"
 CONFIG_FILE = CONFIG_DIR / "config.json"
@@ -550,8 +551,21 @@ def cmd_resume():
     return 0
 
 
+def self_path():
+    """The command's stable path, for the LaunchAgent and wake hook.
+    Deliberately not resolved through symlinks: a Homebrew install must
+    record /opt/homebrew/bin/docksteady, not the versioned Cellar path
+    that dies on the next upgrade."""
+    argv0 = sys.argv[0]
+    if "/" not in argv0:
+        found = shutil.which(argv0)
+        if found:
+            return str(Path(found).absolute())
+    return str(Path(argv0).absolute())
+
+
 def install_agent(poll_seconds):
-    me = str(Path(sys.argv[0]).resolve())
+    me = self_path()
     AGENT_PLIST.parent.mkdir(parents=True, exist_ok=True)
     with open(AGENT_PLIST, "wb") as fh:
         plistlib.dump({
