@@ -1,0 +1,708 @@
+#!/usr/bin/env python3
+"""docksteady: keep a macOS multi-monitor arrangement steady when the Mac
+cannot tell identical displays apart.
+
+Identical panels often ship the same placeholder EDID serial, so macOS
+cannot distinguish them and may trade their identities on wake or replug:
+every arrangement store stays self-consistent while the physical panels
+show swapped content and mirrored geometry. docksteady grounds each
+window-server display in its panel's immutable factory serial (readable
+per SoC display pipe in IOKit, bridged to the window server through the
+CoreDisplay info dictionary) and enforces the intended arrangement: the
+two externals side by side with a central seam, the laptop screen centred
+underneath.
+
+Commands:
+  init    detect the attached panels, choose which is left and right,
+          write the configuration, and arm the automatic triggers (a
+          LaunchAgent that runs at login and on a poll interval, and a
+          sleepwatcher wake hook). Flags: --left SERIAL --right SERIAL
+          --poll SECONDS --yes.
+  apply   enforce the arrangement; no-op when already correct. Flags:
+          --retries N --quiet --dry-run.
+  swap    exchange the two panels' blessed sides and re-apply. Use once
+          after init if the sides came out backwards. Note: window
+          content rides the display identity, not the frame, so swap
+          corrects geometry and mouse behaviour; use swap-windows for
+          the windows themselves.
+  swap-windows
+          move every standard window on one external to the same spot on
+          the other, via the Accessibility API. The content-level
+          recovery after an identity flip. Covers windows on the
+          currently visible Space of each display; full-screen Spaces
+          and other desktops are dragged across in Mission Control.
+          Needs Accessibility permission for the invoking terminal.
+  save    bless the current arrangement as the good one.
+  status  print the parsed current state.
+  probe FRAGMENT
+          diagnostic: list processes matching FRAGMENT with visibility,
+          window count, and window geometry, through the same
+          python-to-osascript chain swap-windows uses.
+  pause [minutes]
+          suspend automatic enforcement (default 60 min); resume lifts
+          it early. Enforcement also skips while System Settings is the
+          frontmost app, so manual drags are never fought.
+  version print the version.
+
+docksteady acts only when both configured panels are attached (checked by
+factory serial in IOKit); screens at any other location are never
+touched. Never disable one of the panels with displayplacer
+(enabled:false): the disabled panel goes fully offline and only a
+physical replug, possibly with a dock power-cycle, brings it back.
+
+Files: ~/.config/docksteady/{config.json,state.json},
+       ~/Library/Logs/docksteady.log
+"""
+
+import ctypes
+import fcntl
+import json
+import plistlib
+import re
+import subprocess
+import sys
+import time
+from datetime import datetime
+from pathlib import Path
+
+VERSION = "0.1.0"
+IOREG = "/usr/sbin/ioreg"
+CONFIG_DIR = Path.home() / ".config" / "docksteady"
+CONFIG_FILE = CONFIG_DIR / "config.json"
+STATE_FILE = CONFIG_DIR / "state.json"
+LOCK_FILE = CONFIG_DIR / "lock"
+PAUSE_FILE = CONFIG_DIR / "pause-until"
+LOG_FILE = Path.home() / "Library" / "Logs" / "docksteady.log"
+AGENT_LABEL = "dk.denfrievilje.docksteady"
+AGENT_PLIST = Path.home() / "Library" / "LaunchAgents" / f"{AGENT_LABEL}.plist"
+WAKEUP = Path.home() / ".wakeup"
+HOOK_BEGIN = "# >>> docksteady wake hook >>>"
+HOOK_END = "# <<< docksteady wake hook <<<"
+
+QUIET = False
+
+
+def log(msg):
+    line = f"{datetime.now().isoformat(timespec='seconds')} {msg}"
+    print(line)
+    try:
+        with open(LOG_FILE, "a") as fh:
+            fh.write(line + "\n")
+    except OSError:
+        pass
+
+
+def log_info(msg):
+    """Routine outcomes: silenced under --quiet (the poll and other
+    automatic triggers), so the log holds only actions and anomalies."""
+    if not QUIET:
+        log(msg)
+
+
+def load_config():
+    try:
+        return json.loads(CONFIG_FILE.read_text())
+    except (OSError, ValueError):
+        return None
+
+
+def save_config(cfg):
+    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    CONFIG_FILE.write_text(json.dumps(cfg, indent=2) + "\n")
+
+
+def displayplacer_path(cfg):
+    for candidate in ([cfg.get("displayplacer")] if cfg and cfg.get("displayplacer") else []) + [
+            "/opt/homebrew/bin/displayplacer", "/usr/local/bin/displayplacer"]:
+        if candidate and Path(candidate).exists():
+            return candidate
+    return None
+
+
+def parse_list(dp):
+    out = subprocess.run([dp, "list"], capture_output=True, text=True)
+    screens = []
+    for block in out.stdout.split("Persistent screen id: ")[1:]:
+        s = {"persistent": block.split("\n", 1)[0].strip()}
+        for key, pattern, cast in (
+            ("contextual", r"Contextual screen id: (\S+)", str),
+            ("type", r"Type: (.+)", str),
+            ("hz", r"Hertz: (\d+)", int),
+            ("depth", r"Color Depth: (\d+)", int),
+            ("scaling", r"Scaling: (\S+)", str),
+            ("degree", r"Rotation: (\d+)", int),
+        ):
+            m = re.search(pattern, block)
+            if m:
+                s[key] = cast(m.group(1).strip())
+        m = re.search(r"Resolution: (\d+)x(\d+)", block)
+        if m:
+            s["w"], s["h"] = int(m.group(1)), int(m.group(2))
+        m = re.search(r"Origin: \((-?\d+),(-?\d+)\)", block)
+        if m:
+            s["x"], s["y"] = int(m.group(1)), int(m.group(2))
+        screens.append(s)
+    mac = next((s for s in screens if "MacBook built in" in s.get("type", "")), None)
+    exts = [s for s in screens if s is not mac]
+    return mac, exts
+
+
+def profile(s, x, y):
+    parts = [f"id:{s['persistent']}", f"res:{s['w']}x{s['h']}"]
+    if "hz" in s:
+        parts.append(f"hz:{s['hz']}")
+    parts += [
+        f"color_depth:{s.get('depth', 8)}",
+        "enabled:true",
+        f"scaling:{s.get('scaling', 'on')}",
+        f"origin:({x},{y})",
+        f"degree:{s.get('degree', 0)}",
+    ]
+    return " ".join(parts)
+
+
+def pipe_map(only=None):
+    """Map factory serial -> SoC display pipe (dispext0/1...), from IOKit.
+    `only` restricts to a set of serials; None returns every panel seen."""
+    out = subprocess.run([IOREG, "-lw0"], capture_output=True, text=True)
+    pipes, current = {}, None
+    for line in out.stdout.splitlines():
+        m = re.search(r"\+-o (disp\w+)@", line)
+        if m:
+            current = m.group(1)
+        m = re.search(r'"AlphanumericSerialNumber"="([^"]+)"', line)
+        if m and current and (only is None or m.group(1) in only):
+            pipes[m.group(1)] = current
+    return pipes
+
+
+def cg_serial_map(pipes):
+    """Map window-server display UUID -> factory serial.
+
+    Uses the private CoreDisplay info dictionary: IODisplayLocation names
+    the SoC pipe each display renders to, IOKit says which panel each
+    pipe drives. Returns {} when the bridge is unavailable so callers
+    fall back to the saved UUID snapshot or current positions.
+    """
+    try:
+        cg = ctypes.CDLL("/System/Library/Frameworks/CoreGraphics.framework/CoreGraphics")
+        cf = ctypes.CDLL("/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation")
+        cd = ctypes.CDLL("/System/Library/Frameworks/CoreDisplay.framework/CoreDisplay")
+        cd.CoreDisplay_DisplayCreateInfoDictionary.restype = ctypes.c_void_p
+        cd.CoreDisplay_DisplayCreateInfoDictionary.argtypes = [ctypes.c_uint32]
+        cf.CFCopyDescription.restype = ctypes.c_void_p
+        cf.CFCopyDescription.argtypes = [ctypes.c_void_p]
+        cf.CFStringGetCString.argtypes = [
+            ctypes.c_void_p, ctypes.c_char_p, ctypes.c_long, ctypes.c_uint32]
+        cf.CFRelease.argtypes = [ctypes.c_void_p]
+        count = ctypes.c_uint32(0)
+        ids = (ctypes.c_uint32 * 16)()
+        cg.CGGetOnlineDisplayList(16, ids, ctypes.byref(count))
+        by_pipe = {p: s for s, p in pipes.items()}
+        result = {}
+        for i in range(count.value):
+            info = cd.CoreDisplay_DisplayCreateInfoDictionary(ids[i])
+            if not info:
+                continue
+            d = cf.CFCopyDescription(info)
+            buf = ctypes.create_string_buffer(1_000_000)
+            cf.CFStringGetCString(d, buf, len(buf), 0x08000100)
+            text = buf.value.decode("utf-8", "replace")
+            cf.CFRelease(d)
+            cf.CFRelease(info)
+            mu = re.search(r'kCGDisplayUUID = "([0-9A-Fa-f-]+)"', text)
+            mp = re.search(r'IODisplayLocation = "[^"]*/(disp\w+)@', text)
+            if mu and mp and by_pipe.get(mp.group(1)):
+                result[mu.group(1)] = by_pipe[mp.group(1)]
+        return result
+    except Exception as e:  # private API; degrade gracefully on any change
+        log(f"serial bridge unavailable ({e}); using saved/position sides")
+        return {}
+
+
+def paused():
+    try:
+        until = float(PAUSE_FILE.read_text().strip())
+    except (OSError, ValueError):
+        return False
+    if time.time() < until:
+        return True
+    try:
+        PAUSE_FILE.unlink()
+    except OSError:
+        pass
+    return False
+
+
+def settings_frontmost():
+    """True while System Settings is the active app (user likely mid-drag).
+    A merely running Settings process must not block enforcement: it can
+    linger for days and would silently disable every trigger."""
+    r = subprocess.run(["/usr/bin/lsappinfo", "front"],
+                       capture_output=True, text=True)
+    asn = r.stdout.strip()
+    if not asn:
+        return False
+    r = subprocess.run(["/usr/bin/lsappinfo", "info", "-only", "name", asn],
+                       capture_output=True, text=True)
+    return "System Settings" in r.stdout
+
+
+def panels_ready(cfg, mac, exts, ctx, pipes):
+    missing = {cfg["left"], cfg["right"]} - set(pipes)
+    if missing:
+        log_info(f"{ctx}: configured panels not attached (missing {sorted(missing)}); "
+                 "leaving displays untouched")
+        return False
+    if mac is None or len(exts) != 2:
+        log_info(f"{ctx}: unexpected screen set "
+                 f"(mac={'yes' if mac else 'no'}, externals={len(exts)}); "
+                 "leaving displays untouched")
+        return False
+    return True
+
+
+def load_state():
+    try:
+        return json.loads(STATE_FILE.read_text())
+    except (OSError, ValueError):
+        return None
+
+
+def snapshot_state(mac, left, right):
+    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    STATE_FILE.write_text(json.dumps({
+        "mac": mac["persistent"],
+        "left": left["persistent"],
+        "right": right["persistent"],
+        "saved_at": datetime.now().isoformat(timespec="seconds"),
+    }, indent=2) + "\n")
+
+
+def pick_sides(cfg, exts, smap):
+    """Return (left, right, source). The config's blessed factory serials
+    win; then the saved UUID snapshot; then current x order."""
+    by_serial = {smap.get(e["persistent"]): e for e in exts}
+    if set(by_serial) == {cfg["left"], cfg["right"]}:
+        return (by_serial[cfg["left"]], by_serial[cfg["right"]],
+                f"factory serials (left={cfg['left']} right={cfg['right']})")
+    state = load_state() or {}
+    if {state.get("left"), state.get("right")} == {e["persistent"] for e in exts}:
+        by_id = {e["persistent"]: e for e in exts}
+        return (by_id[state["left"]], by_id[state["right"]],
+                "saved UUID snapshot (serial bridge unavailable)")
+    left, right = sorted(exts, key=lambda e: (e.get("x", 0), e.get("contextual", "")))
+    return left, right, "current positions (no matching saved state)"
+
+
+def targets(mac, left, right):
+    seam = mac["w"] // 2
+    return {
+        mac["persistent"]: (0, 0),
+        left["persistent"]: (seam - left["w"], -left["h"]),
+        right["persistent"]: (seam, -right["h"]),
+    }
+
+
+def notify(cfg, text):
+    if not cfg.get("notify", True):
+        return
+    try:
+        subprocess.run(
+            ["/usr/bin/osascript", "-e",
+             f'display notification "{text}" with title "docksteady"'],
+            capture_output=True, timeout=10)
+    except Exception:
+        pass
+
+
+def run_displayplacer(dp, mac, left, right, tgt, dry):
+    args = [profile(s, *tgt[s["persistent"]]) for s in (mac, left, right)]
+    if dry:
+        log("dry-run: displayplacer " + " ".join(f'"{a}"' for a in args))
+        return True
+    r = subprocess.run([dp, *args], capture_output=True, text=True)
+    if r.returncode != 0:
+        log(f"displayplacer failed ({r.returncode}): {r.stdout.strip()} {r.stderr.strip()}")
+        return False
+    return True
+
+
+def require_setup():
+    cfg = load_config()
+    if not cfg or "left" not in cfg or "right" not in cfg:
+        print("docksteady is not configured yet: run `docksteady init`")
+        sys.exit(1)
+    dp = displayplacer_path(cfg)
+    if not dp:
+        print("displayplacer not found: brew install jakehilborn/jakehilborn/displayplacer")
+        sys.exit(1)
+    return cfg, dp
+
+
+def cmd_apply(retries, dry):
+    cfg, dp = require_setup()
+    if paused():
+        log_info("apply: enforcement paused (docksteady resume to lift)")
+        return 0
+    if settings_frontmost():
+        log_info("apply: System Settings is frontmost; not enforcing while you arrange")
+        return 0
+    for attempt in range(1, retries + 1):
+        mac, exts = parse_list(dp)
+        pipes = pipe_map({cfg["left"], cfg["right"]})
+        if not panels_ready(cfg, mac, exts, f"apply attempt {attempt}/{retries}", pipes):
+            if attempt < retries:
+                time.sleep(8)
+            continue
+        smap = cg_serial_map(pipes)
+        left, right, source = pick_sides(cfg, exts, smap)
+        tgt = targets(mac, left, right)
+        current = {s["persistent"]: (s.get("x"), s.get("y")) for s in (mac, left, right)}
+        if current == tgt:
+            log_info(f"attempt {attempt}: layout correct (sides from {source})")
+            return 0
+        log(f"attempt {attempt}: enforcing layout (sides from {source}); "
+            f"current={current} target={tgt}")
+        if run_displayplacer(dp, mac, left, right, tgt, dry) and not dry:
+            snapshot_state(mac, left, right)
+            notify(cfg, "Arrangement re-pinned. If window contents traded sides, "
+                        "run docksteady swap-windows or replug the dock.")
+            return 0
+        if dry:
+            return 0
+        if attempt < retries:
+            time.sleep(8)
+    return 1
+
+
+def cmd_swap(dry):
+    cfg, dp = require_setup()
+    mac, exts = parse_list(dp)
+    pipes = pipe_map({cfg["left"], cfg["right"]})
+    if not panels_ready(cfg, mac, exts, "swap", pipes):
+        return 1
+    smap = cg_serial_map(pipes)
+    if set(smap.values()) == {cfg["left"], cfg["right"]}:
+        cfg["left"], cfg["right"] = cfg["right"], cfg["left"]
+        if not dry:
+            save_config(cfg)
+        left, right, _ = pick_sides(cfg, exts, smap)
+        log(f"swap: blessed sides flipped (left={cfg['left']} right={cfg['right']})")
+    else:
+        left, right, source = pick_sides(cfg, exts, smap)
+        left, right = right, left
+        log(f"swap: serial bridge unavailable; exchanging frames only "
+            f"(previous sides from {source}); blessing unchanged")
+    if run_displayplacer(dp, mac, left, right, targets(mac, left, right), dry):
+        if not dry:
+            snapshot_state(mac, left, right)
+        return 0
+    return 1
+
+
+def cmd_save():
+    cfg, dp = require_setup()
+    mac, exts = parse_list(dp)
+    pipes = pipe_map({cfg["left"], cfg["right"]})
+    if not panels_ready(cfg, mac, exts, "save", pipes):
+        return 1
+    smap = cg_serial_map(pipes)
+    left, right = sorted(exts, key=lambda e: (e.get("x", 0), e.get("contextual", "")))
+    ls, rs = smap.get(left["persistent"]), smap.get(right["persistent"])
+    if ls and rs:
+        cfg["left"], cfg["right"] = ls, rs
+        save_config(cfg)
+    snapshot_state(mac, left, right)
+    log(f"saved: left={ls or left['persistent']} right={rs or right['persistent']}")
+    return 0
+
+
+def cmd_status():
+    cfg = load_config()
+    if not cfg:
+        print("not configured: run `docksteady init`")
+        return 1
+    dp = displayplacer_path(cfg)
+    if not dp:
+        print("displayplacer not found: brew install jakehilborn/jakehilborn/displayplacer")
+        return 1
+    mac, exts = parse_list(dp)
+    smap = cg_serial_map(pipe_map())
+    for s in ([mac] if mac else []) + exts:
+        print(f"{s.get('type', '?'):28} id={s['persistent']} "
+              f"panel={smap.get(s['persistent'], 'unknown')} "
+              f"res={s.get('w')}x{s.get('h')} origin=({s.get('x')},{s.get('y')})")
+    print(f"config: {cfg}")
+    print(f"state:  {load_state()}")
+    print(f"paused: {paused()}; settings frontmost: {settings_frontmost()}")
+    return 0
+
+
+def cmd_swap_windows(dry):
+    cfg, dp = require_setup()
+    mac, exts = parse_list(dp)
+    pipes = pipe_map({cfg["left"], cfg["right"]})
+    if not panels_ready(cfg, mac, exts, "swap-windows", pipes):
+        return 1
+    left, right = sorted(exts, key=lambda e: e["x"])
+    dx = right["x"] - left["x"]
+    x0, x1, x2 = left["x"], right["x"], right["x"] + right["w"]
+    y0, y1 = left["y"], left["y"] + left["h"]
+    if dry:
+        log(f"dry-run swap-windows: left=[{x0},{x1}) right=[{x1},{x2}) "
+            f"y=[{y0},{y1}) dx={dx}")
+        return 0
+    probe = subprocess.run(
+        ["/usr/bin/osascript", "-e",
+         'tell application "System Events" to return count of windows of '
+         '(first application process whose frontmost is true)'],
+        capture_output=True, text=True, timeout=30)
+    if probe.returncode != 0:
+        log(f"swap-windows: no assistive access for this terminal "
+            f"({probe.stderr.strip()[:160]}); grant Accessibility permission "
+            "in System Settings > Privacy & Security, then rerun")
+        return 1
+    script = f'''
+tell application "System Events"
+  set movedCount to 0
+  repeat with proc in (application processes whose visible is true)
+    try
+      repeat with w in windows of proc
+        try
+          set {{wx, wy}} to position of w
+          set {{ww, wh}} to size of w
+          set midX to wx + ww / 2
+          set midY to wy + wh / 2
+          if midY >= {y0} and midY < {y1} then
+            if midX >= {x0} and midX < {x1} then
+              set position of w to {{wx + {dx}, wy}}
+              set movedCount to movedCount + 1
+            else if midX >= {x1} and midX < {x2} then
+              set position of w to {{wx - {dx}, wy}}
+              set movedCount to movedCount + 1
+            end if
+          end if
+        end try
+      end repeat
+    end try
+  end repeat
+  return movedCount
+end tell'''
+    try:
+        r = subprocess.run(["/usr/bin/osascript", "-e", script],
+                           capture_output=True, text=True, timeout=120)
+    except subprocess.TimeoutExpired:
+        log("swap-windows timed out")
+        return 1
+    if r.returncode != 0:
+        log(f"swap-windows failed ({r.returncode}): {r.stderr.strip()[:300]}")
+        return 1
+    log(f"swap-windows: moved {r.stdout.strip()} windows between the externals")
+    return 0
+
+
+def cmd_probe(fragment):
+    if not re.fullmatch(r"[A-Za-z0-9 ._-]{1,40}", fragment):
+        print("probe: fragment must be plain text (letters, digits, space, ._-)")
+        return 1
+    script = f'''
+tell application "System Events"
+  set out to ""
+  repeat with proc in (application processes whose name contains "{fragment}")
+    set out to out & (name of proc) & " visible=" & (visible of proc as text) ¬
+      & " windows=" & ((count of windows of proc) as text) & linefeed
+    repeat with w in windows of proc
+      set {{wx, wy}} to position of w
+      set {{ww, wh}} to size of w
+      set sr to "?"
+      try
+        set sr to subrole of w as text
+      end try
+      set out to out & "  window: pos=(" & wx & "," & wy & ") size=(" ¬
+        & ww & "x" & wh & ") subrole=" & sr & linefeed
+    end repeat
+  end repeat
+  return out
+end tell'''
+    r = subprocess.run(["/usr/bin/osascript", "-e", script],
+                       capture_output=True, text=True, timeout=60)
+    print(r.stdout.strip() or "(no matching visible process output)")
+    if r.returncode != 0:
+        print(f"probe failed ({r.returncode}): {r.stderr.strip()[:300]}")
+        return 1
+    return 0
+
+
+def cmd_pause(minutes):
+    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    PAUSE_FILE.write_text(str(time.time() + minutes * 60))
+    log(f"enforcement paused for {minutes} min (docksteady resume to lift)")
+    return 0
+
+
+def cmd_resume():
+    try:
+        PAUSE_FILE.unlink()
+    except OSError:
+        pass
+    log("enforcement resumed")
+    return 0
+
+
+def install_agent(poll_seconds):
+    me = str(Path(sys.argv[0]).resolve())
+    AGENT_PLIST.parent.mkdir(parents=True, exist_ok=True)
+    with open(AGENT_PLIST, "wb") as fh:
+        plistlib.dump({
+            "Label": AGENT_LABEL,
+            "ProgramArguments": [me, "apply", "--retries", "6", "--quiet"],
+            "RunAtLoad": True,
+            "StartInterval": poll_seconds,
+        }, fh)
+    uid = subprocess.run(["/usr/bin/id", "-u"], capture_output=True,
+                         text=True).stdout.strip()
+    subprocess.run(["/bin/launchctl", "bootout", f"gui/{uid}/{AGENT_LABEL}"],
+                   capture_output=True)
+    r = subprocess.run(["/bin/launchctl", "bootstrap", f"gui/{uid}", str(AGENT_PLIST)],
+                       capture_output=True, text=True)
+    return r.returncode == 0, me
+
+
+def install_wake_hook(me):
+    block = (f"{HOOK_BEGIN}\n"
+             f'( "{me}" apply --retries 6 --quiet ) '
+             f'>/dev/null 2>>"$HOME/Library/Logs/docksteady.log" &\n'
+             f"{HOOK_END}\n")
+    text = WAKEUP.read_text() if WAKEUP.exists() else "#!/bin/sh\n"
+    if HOOK_BEGIN in text:
+        text = re.sub(re.escape(HOOK_BEGIN) + r".*?" + re.escape(HOOK_END) + r"\n?",
+                      block, text, flags=re.S)
+    else:
+        text = text.rstrip("\n") + "\n\n" + block
+    WAKEUP.write_text(text)
+    WAKEUP.chmod(0o755)
+
+
+def sleepwatcher_running():
+    r = subprocess.run(["/bin/launchctl", "list"], capture_output=True, text=True)
+    return "sleepwatcher" in r.stdout
+
+
+def cmd_init(argv):
+    left_arg = right_arg = None
+    poll = 45
+    yes = "--yes" in argv
+    if "--left" in argv:
+        left_arg = argv[argv.index("--left") + 1]
+    if "--right" in argv:
+        right_arg = argv[argv.index("--right") + 1]
+    if "--poll" in argv:
+        poll = int(argv[argv.index("--poll") + 1])
+
+    dp = displayplacer_path(load_config() or {})
+    if not dp:
+        print("displayplacer is required:\n"
+              "  brew install jakehilborn/jakehilborn/displayplacer")
+        return 1
+    mac, exts = parse_list(dp)
+    if mac is None or len(exts) != 2:
+        print(f"init needs the laptop plus exactly two externals attached "
+              f"(found mac={'yes' if mac else 'no'}, externals={len(exts)}); "
+              "dock the machine and rerun")
+        return 1
+    pipes = pipe_map()
+    smap = cg_serial_map(pipes)
+    serials = {e["persistent"]: smap.get(e["persistent"]) for e in exts}
+    if None in serials.values():
+        print("could not read a factory serial for every external panel; "
+              "docksteady needs the IOKit serial bridge to work on this machine")
+        return 1
+
+    by_x = sorted(exts, key=lambda e: e.get("x", 0))
+    left_serial = left_arg or serials[by_x[0]["persistent"]]
+    right_serial = right_arg or serials[by_x[1]["persistent"]]
+    if {left_serial, right_serial} != set(serials.values()):
+        print(f"--left/--right must name the attached panels: {sorted(serials.values())}")
+        return 1
+
+    print("Detected arrangement:")
+    for e in by_x:
+        print(f"  panel {serials[e['persistent']]} at origin "
+              f"({e.get('x')},{e.get('y')})")
+    print(f"Blessing: left={left_serial} right={right_serial} "
+          "(taken from the current arrangement)")
+    if not yes:
+        answer = input("Is the current arrangement correct, including which "
+                       "physical panel shows what? [y/N] ").strip().lower()
+        if answer != "y":
+            print("Arrange the displays correctly first (System Settings > "
+                  "Displays), then rerun docksteady init. If only the sides "
+                  "are backwards after init, run docksteady swap once.")
+            return 1
+
+    save_config({"left": left_serial, "right": right_serial,
+                 "poll_seconds": poll, "notify": True})
+    left, right, _ = pick_sides(load_config(), exts, smap)
+    snapshot_state(mac, left, right)
+    ok, me = install_agent(poll)
+    install_wake_hook(me)
+    print(f"config written to {CONFIG_FILE}")
+    print(f"LaunchAgent {'armed' if ok else 'FAILED to load'}: {AGENT_PLIST} "
+          f"(login + every {poll}s)")
+    print(f"wake hook installed in {WAKEUP}")
+    if not sleepwatcher_running():
+        print("sleepwatcher is not running; wake enforcement needs it:\n"
+              "  brew install sleepwatcher && brew services start sleepwatcher")
+    code = cmd_apply(retries=1, dry=False)
+    print("initial apply: " + ("layout verified" if code == 0 else "check the log"))
+    return 0
+
+
+def main():
+    global QUIET
+    args = sys.argv[1:]
+    dry = "--dry-run" in args
+    QUIET = "--quiet" in args
+    args = [a for a in args if a not in ("--dry-run", "--quiet")]
+    cmd = args[0] if args else "help"
+    retries = int(args[args.index("--retries") + 1]) if "--retries" in args else 1
+
+    if cmd == "version":
+        print(f"docksteady {VERSION}")
+        return 0
+    if cmd == "init":
+        return cmd_init(args[1:])
+    if cmd == "status":
+        return cmd_status()
+    if cmd == "probe":
+        if len(args) < 2:
+            print("usage: docksteady probe FRAGMENT")
+            return 1
+        return cmd_probe(args[1])
+    if cmd == "pause":
+        return cmd_pause(int(args[1]) if len(args) > 1 else 60)
+    if cmd == "resume":
+        return cmd_resume()
+
+    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    with open(LOCK_FILE, "w") as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            log_info(f"{cmd}: another docksteady run holds the lock; exiting")
+            return 0
+        if cmd == "apply":
+            return cmd_apply(retries, dry)
+        if cmd == "swap":
+            return cmd_swap(dry)
+        if cmd == "swap-windows":
+            return cmd_swap_windows(dry)
+        if cmd == "save":
+            return cmd_save()
+        print(__doc__)
+        return 0 if cmd == "help" else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())
