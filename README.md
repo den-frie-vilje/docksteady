@@ -14,11 +14,14 @@ You need docksteady if all of the following are true:
   crosses between screens on the wrong side.
 - The arrangement you set in System Settings doesn't stay.
 
-This happens because many identical displays report the same serial number.
-macOS uses that number to tell displays apart, so each time they reconnect it
-has to guess which is which, and sometimes it guesses wrong. docksteady reads
-a serial number macOS doesn't use, one that is unique to each panel, and uses
-it to put the arrangement right within seconds, automatically.
+This happens because a display introduces itself to the Mac with a small
+identity record, and that record carries two serials: a number, which macOS
+uses to tell displays apart, and a text field with the serial printed on the
+panel's label. On many identical displays the number is a factory
+placeholder, the same on every unit, so macOS has to guess which panel is
+which each time they reconnect, and sometimes it guesses wrong. The text
+serial is still unique to each panel; docksteady reads that one instead, and
+uses it to put the arrangement right within seconds, automatically.
 
 ## What docksteady corrects, and what it can't move
 
@@ -34,22 +37,26 @@ The arrangement it keeps:
 
 Windows and Spaces are different. macOS attaches them to each display, and
 when a mix-up happens they travel with the display to the wrong side. This is
-how macOS works: no arrangement tool can move them back. To move them back
-yourself:
+how macOS works: correcting the arrangement doesn't bring them back. To move
+them back:
 
 - Click **Swap windows** in the dialog docksteady can show when it corrects
   the arrangement (see Settings), or run `docksteady swap-windows` any time.
-  Either moves every standard window across in one go.
-- Add `--with-fullscreen` to carry full-screen windows too: docksteady takes
-  each one out of full screen, moves it across with the rest, then puts it
-  back into full screen on its new display. Split View pairs come back as two
-  separate full-screen Spaces.
-- Additional desktops move by dragging them between displays in Mission
-  Control.
+  Either moves the standard windows across in one pass.
+- Run `docksteady swap-windows --with-fullscreen` to carry full-screen
+  windows too: docksteady takes each one out of full screen, moves it across
+  with the rest, then puts it back into full screen on its new display. It
+  can only reach full-screen windows that are showing on their display when
+  you run it; a hidden full-screen Space stays put, and a window that
+  refuses or loses its name along the way stays a standard window, noted in
+  the log. Split View pairs come back as two separate full-screen Spaces.
+- Additional desktops, hidden full-screen Spaces included, move by dragging
+  them between displays in Mission Control.
 
 ## What you need
 
-- A Mac with Apple silicon, alongside its built-in screen
+- A Mac laptop with Apple silicon; the lid can be open or closed, and
+  docksteady keeps a separate arrangement for each
 - Exactly two identical external displays; docksteady doesn't manage other
   setups
 - macOS 26, where docksteady is developed and in daily use
@@ -91,28 +98,35 @@ the same dependencies.
    initial apply: layout verified
    ```
 
-3. Check it took: run `docksteady status`. You should see both panels, each
-   with its serial number and position, and your settings.
-4. If the two sides came out backwards, run `docksteady swap` once.
+3. Check that it worked: run `docksteady status`. You should see both
+   panels, each with its serial number and position, and your settings.
+4. To see it work now, put your Mac to sleep, wake it, and watch the
+   arrangement come back.
+5. If left and right are reversed after a correction, run `docksteady swap`
+   once.
 
 From now on, docksteady sets itself to run at login, when your Mac wakes,
 and every 45 seconds, and puts the arrangement right whenever macOS has
-mixed the displays up.
+mixed the displays up. If you use the Mac both lid open and lid closed, run
+`docksteady save` once in the other mode too: each mode keeps its own
+recorded arrangement.
 
 ## What macOS will ask you
 
 macOS tells you about background activity, so expect these once:
 
-- **Background Items Added**, naming sleepwatcher and dk.denfrievilje.docksteady,
-  after install and setup. That is docksteady's schedule being registered.
+- **Background Items Added**, after install and setup: sleepwatcher, and
+  docksteady's schedule, which can appear as "sh", the small system shell it
+  runs through. That is the schedule being registered.
 - **Allow notifications**, the first time docksteady reports a correction.
   Command-line notifications appear under Script Editor's name; allow them
   there.
-- **Accessibility permission**, the first time windows are moved. The prompt
-  names the program that does the moving (python3 when you clicked the
-  dialog's button, or your terminal app when you ran `docksteady
-  swap-windows` yourself). Allow it in System Settings > Privacy & Security >
-  Accessibility, or decline and move windows from your terminal only.
+- **Accessibility permission**, the first time you move windows. The prompt
+  names the program that moves them: python3 if you clicked the dialog's
+  button, or your terminal app if you ran `docksteady swap-windows`
+  yourself. Allow it in System Settings > Privacy & Security >
+  Accessibility. If you decline, you can still move windows from your
+  terminal, after allowing your terminal app the same way.
 
 ## What to expect
 
@@ -131,28 +145,35 @@ banner` switches back, and `docksteady notify off` silences both.
 
 ## Settings
 
-Setup writes these files, and nothing else:
+Setup and routine operation use these files, and nothing else:
 
 - `~/.config/docksteady/config.json`, the settings below
 - `~/.config/docksteady/state.json`, a snapshot used as fallback
+- small runtime markers in `~/.config/docksteady/` (`lock`, `pause-until`,
+  `last-skip`)
 - `~/Library/LaunchAgents/dk.denfrievilje.docksteady.plist`, the schedule
 - a marked block in `~/.wakeup`, the wake trigger (sleepwatcher's hook file)
-- `~/Library/Logs/docksteady.log`, the log of everything it does
+- `~/Library/Logs/docksteady.log`, the log of every action and every reason
+  it stood aside
 
 `config.json` keys:
 
 | Key | Default | Meaning |
 | --- | --- | --- |
 | `left`, `right` | set by `init` | factory serial of the panel assigned to each side |
-| `origins` | set by `init` and `save` | the arranged position of each display, replayed exactly |
+| `origins`, `origins_clamshell` | set by `init` and `save` | the arranged positions, one recording per lid mode, replayed exactly |
 | `poll_seconds` | `45` | how often the background check runs; change with `docksteady init --poll N` |
 | `notify` | `"banner"` | `"banner"`, `"dialog"`, or `"off"`; change with `docksteady notify ...` |
 | `dialog_timeout` | `120` | seconds the dialog stays on screen |
 | `swap_fullscreen` | `false` | make the dialog's button carry full-screen windows too |
 
-Rearranged your desk? Set the new arrangement up in System Settings, then run
-`docksteady save` to make it the one docksteady keeps. `save` also refreshes
-the stored positions after a resolution or scaling change.
+Change any of the last four from the command line, no file editing needed,
+for example `docksteady set swap_fullscreen true` or `docksteady set
+dialog_timeout 300`.
+
+If you rearrange your desk, set the new arrangement in System Settings, then
+run `docksteady save` to make it the one docksteady keeps. `save` also
+refreshes the stored positions after a resolution or scaling change.
 
 ## All commands
 
@@ -167,6 +188,8 @@ status          show panels, serials, settings, and pause state
 pause [min]     leave the displays alone (default 60 minutes)
 resume          lift a pause early
 notify MODE     set banner, dialog, or off
+set KEY VALUE   change a setting (notify, dialog_timeout,
+                swap_fullscreen, poll_seconds)
 probe NAMEPART  inspect an app's windows through accessibility
 disarm          remove the schedule and wake trigger (before uninstalling)
 version         print the version
@@ -177,10 +200,12 @@ version         print the version
 
 ## How it works
 
-Each panel's true factory serial is readable in the Mac's hardware registry
-(IOKit), attached to the display pipe that drives it. Which pipe each of
-macOS's display identities renders to is readable through the CoreDisplay
-framework. Chaining the two gives docksteady what macOS itself never has: a
+The identity record a display sends is its EDID. macOS keys arrangements on
+the EDID's numeric serial field, the one identical panels share; the EDID's
+text serial, the unique one on the label, surfaces in the Mac's hardware
+registry (IOKit), attached to the display pipe that drives each panel. Which
+pipe each of macOS's display identities renders to is readable through the
+CoreDisplay framework. Chaining the two gives docksteady what macOS itself never has: a
 firm link between a display identity and a physical panel. On that link it
 replays your saved arrangement with
 [displayplacer](https://github.com/jakehilborn/displayplacer), triggered by
@@ -188,8 +213,9 @@ replays your saved arrangement with
 a LaunchAgent at login and on the poll.
 
 Every run first checks, by serial, that both of your panels are attached.
-docksteady changes only those two panels and the MacBook's own screen; with
-any other display attached it does nothing at all.
+docksteady changes only those two panels and, when the lid is open, the
+MacBook's own screen; with any other display attached it does nothing at
+all, and says so in the log.
 
 The serial link uses a private CoreDisplay dictionary. If a macOS update
 changes it, docksteady says so in the log and keeps working from its last
@@ -204,19 +230,20 @@ never does this, and neither should you.
 
 ## Uninstall
 
-Installed with Homebrew:
+If you installed with Homebrew:
 
 ```sh
 docksteady disarm
 brew uninstall docksteady
 ```
 
-Installed from a clone: run `./uninstall.sh`, which does both.
+If you installed from a clone, run `./uninstall.sh`, which does both.
 
 If you forget `disarm`, nothing breaks: the schedule and wake trigger check
-that docksteady is still installed before running, and stay silent when it
-isn't. Run `docksteady disarm` whenever you notice, or leave them; they do
-nothing.
+that docksteady is still installed, and stay silent when it isn't. Leave
+them; they do nothing. To clear them away later, delete
+`~/Library/LaunchAgents/dk.denfrievilje.docksteady.plist` and the marked
+block in `~/.wakeup`, both listed under Settings.
 
 If you no longer want the helpers either: `brew services stop sleepwatcher`,
 then `brew uninstall sleepwatcher displayplacer`. Settings and the log stay

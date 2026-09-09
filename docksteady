@@ -18,8 +18,9 @@ Commands:
   init    detect the attached panels, choose which is left and right,
           write the configuration, and arm the automatic triggers (a
           LaunchAgent that runs at login and on a poll interval, and a
-          sleepwatcher wake hook). Flags: --left SERIAL --right SERIAL
-          --poll SECONDS --yes.
+          sleepwatcher wake hook). Lid open and clamshell each record
+          their own geometry; run init (or save) once in each mode you
+          use. Flags: --left SERIAL --right SERIAL --poll SECONDS --yes.
   apply   enforce the arrangement; no-op when already correct. When it
           acts, it posts a notification (config notify: "banner"), or
           with notify: "dialog" a dialog that stays up to dialog_timeout
@@ -56,6 +57,9 @@ Commands:
   notify banner|dialog|off
           set how enforcement announces itself, without editing the
           config file by hand.
+  set KEY VALUE
+          change a setting from the command line: notify,
+          dialog_timeout, swap_fullscreen, poll_seconds.
   disarm  unload the LaunchAgent and remove the wake hook (run before
           uninstalling); init re-arms them.
   version print the version.
@@ -82,13 +86,14 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-VERSION = "0.3.1"
+VERSION = "0.3.2"
 IOREG = "/usr/sbin/ioreg"
 CONFIG_DIR = Path.home() / ".config" / "docksteady"
 CONFIG_FILE = CONFIG_DIR / "config.json"
 STATE_FILE = CONFIG_DIR / "state.json"
 LOCK_FILE = CONFIG_DIR / "lock"
 PAUSE_FILE = CONFIG_DIR / "pause-until"
+SKIP_FILE = CONFIG_DIR / "last-skip"
 LOG_FILE = Path.home() / "Library" / "Logs" / "docksteady.log"
 AGENT_LABEL = "dk.denfrievilje.docksteady"
 AGENT_PLIST = Path.home() / "Library" / "LaunchAgents" / f"{AGENT_LABEL}.plist"
@@ -265,15 +270,43 @@ def settings_frontmost():
     return "System Settings" in r.stdout
 
 
+def log_skip(key, msg):
+    """Skip reasons log even under --quiet, once per distinct state, so an
+    always-skipping install never has a silent, empty log."""
+    try:
+        if SKIP_FILE.read_text() == key:
+            log_info(msg)
+            return
+    except OSError:
+        pass
+    try:
+        CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+        SKIP_FILE.write_text(key)
+    except OSError:
+        pass
+    log(msg)
+
+
+def clear_skip():
+    try:
+        SKIP_FILE.unlink()
+    except OSError:
+        pass
+
+
 def panels_ready(cfg, mac, exts, ctx, pipes):
+    """The MacBook's own screen is optional: clamshell mode (lid closed,
+    externals only) is a managed configuration of its own."""
     missing = {cfg["left"], cfg["right"]} - set(pipes)
     if missing:
-        log_info(f"{ctx}: configured panels not attached (missing {sorted(missing)}); "
+        log_skip(f"missing:{sorted(missing)}",
+                 f"{ctx}: configured panels not attached (missing {sorted(missing)}); "
                  "leaving displays untouched")
         return False
-    if mac is None or len(exts) != 2:
-        log_info(f"{ctx}: unexpected screen set "
-                 f"(mac={'yes' if mac else 'no'}, externals={len(exts)}); "
+    if len(exts) != 2:
+        log_skip(f"screens:{len(exts)}",
+                 f"{ctx}: unexpected screen set "
+                 f"(mac={'yes' if mac else 'no, clamshell'}, externals={len(exts)}); "
                  "leaving displays untouched")
         return False
     return True
@@ -289,7 +322,7 @@ def load_state():
 def snapshot_state(mac, left, right):
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
     STATE_FILE.write_text(json.dumps({
-        "mac": mac["persistent"],
+        "mac": mac["persistent"] if mac else None,
         "left": left["persistent"],
         "right": right["persistent"],
         "saved_at": datetime.now().isoformat(timespec="seconds"),
@@ -312,34 +345,50 @@ def pick_sides(cfg, exts, smap):
     return left, right, "current positions (no matching saved state)"
 
 
+def origins_key(mac):
+    """Lid-open and clamshell have different coordinate frames (clamshell
+    re-homes the main display to an external), so each mode keeps its own
+    recorded geometry."""
+    return "origins" if mac else "origins_clamshell"
+
+
 def targets(cfg, mac, left, right):
     """Target origin per display. A blessing recorded by init or save
     carries the actual arranged origins keyed by serial, so any geometry
-    is replayed exactly; without them (older configs) the default shape
-    is computed: externals side by side, seam centred over the laptop.
-    Stored origins go stale if resolutions or scaling change; rerun
-    docksteady save after such changes."""
-    saved = cfg.get("origins") or {}
-    if all(k in saved for k in (cfg["left"], cfg["right"], "mac")):
-        return {
-            mac["persistent"]: tuple(saved["mac"]),
+    is replayed exactly; without a recording for the current mode the
+    default shape is computed. Stored origins go stale if resolutions or
+    scaling change; rerun docksteady save after such changes."""
+    saved = cfg.get(origins_key(mac)) or {}
+    need = [cfg["left"], cfg["right"]] + (["mac"] if mac else [])
+    if all(k in saved for k in need):
+        t = {
             left["persistent"]: tuple(saved[cfg["left"]]),
             right["persistent"]: tuple(saved[cfg["right"]]),
         }
-    seam = mac["w"] // 2
+        if mac:
+            t[mac["persistent"]] = tuple(saved["mac"])
+        return t
+    if mac:
+        seam = mac["w"] // 2
+        return {
+            mac["persistent"]: (0, 0),
+            left["persistent"]: (seam - left["w"], -left["h"]),
+            right["persistent"]: (seam, -right["h"]),
+        }
     return {
-        mac["persistent"]: (0, 0),
-        left["persistent"]: (seam - left["w"], -left["h"]),
-        right["persistent"]: (seam, -right["h"]),
+        left["persistent"]: (-left["w"], 0),
+        right["persistent"]: (0, 0),
     }
 
 
 def record_origins(cfg, mac, left, right):
-    cfg["origins"] = {
-        "mac": [mac.get("x", 0), mac.get("y", 0)],
+    origins = {
         cfg["left"]: [left.get("x"), left.get("y")],
         cfg["right"]: [right.get("x"), right.get("y")],
     }
+    if mac:
+        origins["mac"] = [mac.get("x", 0), mac.get("y", 0)]
+    cfg[origins_key(mac)] = origins
 
 
 def notify_mode(cfg):
@@ -386,7 +435,8 @@ def notify(cfg, text):
 
 
 def run_displayplacer(dp, mac, left, right, tgt, dry):
-    args = [profile(s, *tgt[s["persistent"]]) for s in (mac, left, right)]
+    args = [profile(s, *tgt[s["persistent"]])
+            for s in ([mac] if mac else []) + [left, right]]
     if dry:
         log("dry-run: displayplacer " + " ".join(f'"{a}"' for a in args))
         return True
@@ -427,13 +477,16 @@ def cmd_apply(retries, dry):
         smap = cg_serial_map(pipes)
         left, right, source = pick_sides(cfg, exts, smap)
         tgt = targets(cfg, mac, left, right)
-        current = {s["persistent"]: (s.get("x"), s.get("y")) for s in (mac, left, right)}
+        screens = ([mac] if mac else []) + [left, right]
+        current = {s["persistent"]: (s.get("x"), s.get("y")) for s in screens}
         if current == tgt:
+            clear_skip()
             log_info(f"attempt {attempt}: layout correct (sides from {source})")
             return 0
         log(f"attempt {attempt}: enforcing layout (sides from {source}); "
             f"current={current} target={tgt}")
         if run_displayplacer(dp, mac, left, right, tgt, dry) and not dry:
+            clear_skip()
             snapshot_state(mac, left, right)
             notify(cfg, "Arrangement re-pinned. If window contents traded "
                         "sides, swap them back now.")
@@ -454,10 +507,11 @@ def cmd_swap(dry):
     smap = cg_serial_map(pipes)
     if set(smap.values()) == {cfg["left"], cfg["right"]}:
         cfg["left"], cfg["right"] = cfg["right"], cfg["left"]
-        origins = cfg.get("origins") or {}
-        if cfg["left"] in origins and cfg["right"] in origins:
-            origins[cfg["left"]], origins[cfg["right"]] = (
-                origins[cfg["right"]], origins[cfg["left"]])
+        for key in ("origins", "origins_clamshell"):
+            origins = cfg.get(key) or {}
+            if cfg["left"] in origins and cfg["right"] in origins:
+                origins[cfg["left"]], origins[cfg["right"]] = (
+                    origins[cfg["right"]], origins[cfg["left"]])
         if not dry:
             save_config(cfg)
         left, right, _ = pick_sides(cfg, exts, smap)
@@ -514,11 +568,19 @@ def cmd_status():
     return 0
 
 
-def record_and_exit_fullscreen(y0, y1):
+def record_and_exit_fullscreen(lrect, rrect):
     """Phase one of the full-screen tier: find full-screen windows on the
-    managed displays (their AX position equals the display origin, so the
-    y band identifies them), exit full screen, and return (app, title)
-    pairs for later restoration."""
+    managed panels (their AX position equals the display origin, tested
+    against each panel's own rect so laptop full-screen windows are never
+    grabbed), exit full screen, and return (app, title) pairs for later
+    restoration. Only windows on each display's currently visible Space
+    are reachable; a full-screen Space that is not showing is invisible
+    to the scan."""
+    conds = " or ".join(
+        f"(wx >= {x0} and wx < {x1} and wy >= {y0} and wy < {y1})"
+        for (x0, y0, x1, y1) in (lrect, rrect))
+    # the window is recorded only after it actually left full screen, so
+    # a window that refuses is never counted as carried
     script = f'''
 tell application "System Events"
   set out to ""
@@ -528,10 +590,10 @@ tell application "System Events"
         try
           if value of attribute "AXFullScreen" of w is true then
             set {{wx, wy}} to position of w
-            if wy >= {y0} and wy < {y1} then
-              set out to out & (name of proc) & tab & (name of w) & linefeed
+            if {conds} then
               set value of attribute "AXFullScreen" of w to false
               delay 1.0
+              set out to out & (name of proc) & tab & (name of w) & linefeed
             end if
           end if
         end try
@@ -540,8 +602,12 @@ tell application "System Events"
   end repeat
   return out
 end tell'''
-    r = subprocess.run(["/usr/bin/osascript", "-e", script],
-                       capture_output=True, text=True, timeout=180)
+    try:
+        r = subprocess.run(["/usr/bin/osascript", "-e", script],
+                           capture_output=True, text=True, timeout=180)
+    except subprocess.TimeoutExpired:
+        log("swap-windows: full-screen scan timed out; no windows recorded")
+        return []
     pairs = []
     for line in r.stdout.splitlines():
         if "\t" in line:
@@ -565,12 +631,17 @@ tell application "System Events"
   delay 1.5
   return "ok"
 end tell'''
-        r = subprocess.run(["/usr/bin/osascript", "-e", script],
-                           capture_output=True, text=True, timeout=60)
+        try:
+            r = subprocess.run(["/usr/bin/osascript", "-e", script],
+                               capture_output=True, text=True, timeout=60)
+        except subprocess.TimeoutExpired:
+            log(f"swap-windows: re-fullscreen timed out for {app} / {title[:40]}")
+            continue
         if r.returncode == 0:
             restored += 1
         else:
-            log(f"swap-windows: could not re-fullscreen {app} / {title[:40]}")
+            log(f"swap-windows: could not re-fullscreen {app} / {title[:40]} "
+                "(window gone or title changed); it stays a standard window")
     return restored
 
 
@@ -581,14 +652,15 @@ def cmd_swap_windows(dry, with_fullscreen=False):
     if not panels_ready(cfg, mac, exts, "swap-windows", pipes):
         return 1
     left, right = sorted(exts, key=lambda e: e["x"])
-    dx = right["x"] - left["x"]
-    x0, x1, x2 = left["x"], right["x"], right["x"] + right["w"]
-    # union band over both panels, so arbitrary height offsets are covered
-    y0 = min(left["y"], right["y"])
-    y1 = max(left["y"] + left["h"], right["y"] + right["h"])
+    # per-panel rects, so windows on the laptop or any other region are
+    # never grabbed, whatever geometry is blessed; the offset between the
+    # panels' origins carries height differences too
+    dxr, dyr = right["x"] - left["x"], right["y"] - left["y"]
+    lrect = (left["x"], left["y"], left["x"] + left["w"], left["y"] + left["h"])
+    rrect = (right["x"], right["y"], right["x"] + right["w"], right["y"] + right["h"])
     if dry:
-        log(f"dry-run swap-windows: left=[{x0},{x1}) right=[{x1},{x2}) "
-            f"y=[{y0},{y1}) dx={dx}")
+        log(f"dry-run swap-windows: left rect={lrect} right rect={rrect} "
+            f"offset=({dxr},{dyr})")
         return 0
     probe = subprocess.run(
         ["/usr/bin/osascript", "-e",
@@ -602,11 +674,16 @@ def cmd_swap_windows(dry, with_fullscreen=False):
         return 1
     fs_pairs = []
     if with_fullscreen:
-        fs_pairs = record_and_exit_fullscreen(y0, y1)
+        fs_pairs = record_and_exit_fullscreen(lrect, rrect)
         if fs_pairs:
             log(f"swap-windows: {len(fs_pairs)} full-screen window(s) "
                 "recorded and un-fullscreened")
             time.sleep(2)
+        else:
+            log("swap-windows: no full-screen windows found on the visible "
+                "Spaces of the panels (hidden full-screen Spaces are out of "
+                "reach; bring one on screen and rerun, or drag its Space "
+                "across in Mission Control)")
     script = f'''
 tell application "System Events"
   set movedCount to 0
@@ -622,12 +699,12 @@ tell application "System Events"
           set {{ww, wh}} to size of w
           set midX to wx + ww / 2
           set midY to wy + wh / 2
-          if sr is "AXStandardWindow" and midY >= {y0} and midY < {y1} then
-            if midX >= {x0} and midX < {x1} then
-              set position of w to {{wx + {dx}, wy}}
+          if sr is "AXStandardWindow" or sr is "" then
+            if midX >= {lrect[0]} and midX < {lrect[2]} and midY >= {lrect[1]} and midY < {lrect[3]} then
+              set position of w to {{wx + {dxr}, wy + {dyr}}}
               set movedCount to movedCount + 1
-            else if midX >= {x1} and midX < {x2} then
-              set position of w to {{wx - {dx}, wy}}
+            else if midX >= {rrect[0]} and midX < {rrect[2]} and midY >= {rrect[1]} and midY < {rrect[3]} then
+              set position of w to {{wx - {dxr}, wy - {dyr}}}
               set movedCount to movedCount + 1
             end if
           end if
@@ -683,6 +760,34 @@ end tell'''
     if r.returncode != 0:
         print(f"probe failed ({r.returncode}): {r.stderr.strip()[:300]}")
         return 1
+    return 0
+
+
+def cmd_set(key, value):
+    cfg = load_config()
+    if not cfg:
+        print("docksteady is not configured yet: run `docksteady init`")
+        return 1
+    if key == "notify":
+        return cmd_set_notify(value)
+    if key in ("dialog_timeout", "poll_seconds"):
+        try:
+            cfg[key] = int(value)
+        except ValueError:
+            print(f"{key} takes a number of seconds")
+            return 1
+    elif key == "swap_fullscreen":
+        if value not in ("true", "false"):
+            print("swap_fullscreen takes true or false")
+            return 1
+        cfg[key] = value == "true"
+    else:
+        print("settable keys: notify, dialog_timeout, swap_fullscreen, poll_seconds")
+        return 1
+    save_config(cfg)
+    print(f"{key} set to {value}")
+    if key == "poll_seconds":
+        print("run `docksteady init` to apply the new interval to the schedule")
     return 0
 
 
@@ -814,10 +919,9 @@ def cmd_init(argv):
               "  brew install jakehilborn/jakehilborn/displayplacer")
         return 1
     mac, exts = parse_list(dp)
-    if mac is None or len(exts) != 2:
-        print(f"init needs the laptop plus exactly two externals attached "
-              f"(found mac={'yes' if mac else 'no'}, externals={len(exts)}); "
-              "dock the machine and rerun")
+    if len(exts) != 2:
+        print(f"init needs exactly two external displays attached, lid open "
+              f"or closed (found {len(exts)}); dock the machine and rerun")
         return 1
     pipes = pipe_map()
     smap = cg_serial_map(pipes)
@@ -898,6 +1002,9 @@ def main():
         return cmd_resume()
     if cmd == "notify":
         return cmd_set_notify(args[1] if len(args) > 1 else "")
+    if cmd == "set":
+        return cmd_set(args[1] if len(args) > 1 else "",
+                       args[2] if len(args) > 2 else "")
     if cmd == "disarm":
         return cmd_disarm()
 
