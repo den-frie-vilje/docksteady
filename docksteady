@@ -18,8 +18,11 @@ Commands:
           LaunchAgent that runs at login and on a poll interval, and a
           sleepwatcher wake hook). Flags: --left SERIAL --right SERIAL
           --poll SECONDS --yes.
-  apply   enforce the arrangement; no-op when already correct. Flags:
-          --retries N --quiet --dry-run.
+  apply   enforce the arrangement; no-op when already correct. When it
+          acts, it posts a notification (config notify: "banner"), or
+          with notify: "dialog" a dialog that stays up to dialog_timeout
+          seconds and offers to run swap-windows. Flags: --retries N
+          --quiet --dry-run.
   swap    exchange the two panels' blessed sides and re-apply. Use once
           after init if the sides came out backwards. Note: window
           content rides the display identity, not the frame, so swap
@@ -66,7 +69,7 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-VERSION = "0.1.1"
+VERSION = "0.2.0"
 IOREG = "/usr/sbin/ioreg"
 CONFIG_DIR = Path.home() / ".config" / "docksteady"
 CONFIG_FILE = CONFIG_DIR / "config.json"
@@ -305,16 +308,46 @@ def targets(mac, left, right):
     }
 
 
+def notify_mode(cfg):
+    v = cfg.get("notify", True)
+    if v in (True, "banner"):
+        return "banner"
+    if v == "dialog":
+        return "dialog"
+    return "off"
+
+
 def notify(cfg, text):
-    if not cfg.get("notify", True):
-        return
+    """Post-enforcement notice. banner: a transient macOS notification.
+    dialog: a dialog that stays up to dialog_timeout seconds and offers
+    to run swap-windows; the swap runs under this process, so macOS asks
+    once for assistive access for it, and declining keeps the
+    run-from-terminal workflow."""
+    mode = notify_mode(cfg)
+    if mode == "off":
+        return 0
+    if mode == "banner":
+        try:
+            subprocess.run(
+                ["/usr/bin/osascript", "-e",
+                 f'display notification "{text}" with title "docksteady"'],
+                capture_output=True, timeout=10)
+        except Exception:
+            pass
+        return 0
+    timeout = int(cfg.get("dialog_timeout", 120))
+    script = (f'display dialog "{text}" '
+              'buttons {"Dismiss", "Swap windows"} default button "Swap windows" '
+              f'with title "docksteady" giving up after {timeout}')
     try:
-        subprocess.run(
-            ["/usr/bin/osascript", "-e",
-             f'display notification "{text}" with title "docksteady"'],
-            capture_output=True, timeout=10)
-    except Exception:
-        pass
+        r = subprocess.run(["/usr/bin/osascript", "-e", script],
+                           capture_output=True, text=True, timeout=timeout + 15)
+    except subprocess.TimeoutExpired:
+        return 0
+    if "button returned:Swap windows" in r.stdout and "gave up:true" not in r.stdout:
+        log("dialog: swapping windows at the user's request")
+        return cmd_swap_windows(dry=False)
+    return 0
 
 
 def run_displayplacer(dp, mac, left, right, tgt, dry):
@@ -367,8 +400,8 @@ def cmd_apply(retries, dry):
             f"current={current} target={tgt}")
         if run_displayplacer(dp, mac, left, right, tgt, dry) and not dry:
             snapshot_state(mac, left, right)
-            notify(cfg, "Arrangement re-pinned. If window contents traded sides, "
-                        "run docksteady swap-windows or replug the dock.")
+            notify(cfg, "Arrangement re-pinned. If window contents traded "
+                        "sides, swap them back now.")
             return 0
         if dry:
             return 0

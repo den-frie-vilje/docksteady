@@ -96,8 +96,18 @@ version         print the version
 
 `left` and `right` are the factory serials blessed to each side; `init` and
 `swap` maintain them. `poll_seconds` sets the LaunchAgent interval (rerun
-`init` after changing it). `notify` controls the macOS notification posted
-when enforcement acts. The log is `~/Library/Logs/docksteady.log`.
+`init` after changing it). The log is `~/Library/Logs/docksteady.log`.
+
+`notify` controls what happens when enforcement acts: `"banner"` (default)
+posts a transient macOS notification; `"dialog"` shows a dialog that stays on
+screen for up to `dialog_timeout` seconds (default 120) with a button that
+runs `swap-windows` directly; `"off"` disables it. The dialog's button runs
+the swap under the background agent, so macOS asks once whether to grant that
+context assistive access; declining keeps the run-it-from-your-terminal
+workflow. Plain banners cannot hold buttons or linger: that is an Apple
+constraint (actionable notifications need a signed app bundle), though setting
+the osascript entry under System Settings > Notifications to the "Alerts"
+style makes banners stay until dismissed.
 
 ## Scope and caveats
 
