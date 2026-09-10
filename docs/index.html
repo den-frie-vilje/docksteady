@@ -188,8 +188,33 @@
     background: linear-gradient(160deg, #2b2b58 0%, #3d2f70 55%, #5c2f68 100%);
     border: 1px solid rgba(255, 255, 255, .28);
     box-shadow: 0 18px 40px rgba(0, 0, 0, .5);
-    transition: transform .55s cubic-bezier(.45, .05, .25, 1), filter .55s;
+    transition: transform .55s cubic-bezier(.45, .05, .25, 1), filter .55s,
+      border-color .9s;
     display: flex; align-items: center; justify-content: center;
+  }
+  .stage.steady .panel, .stage.steady .lap {
+    border-color: rgba(247, 192, 74, .6);
+  }
+  @property --a { syntax: "<angle>"; inherits: false; initial-value: 0deg; }
+  .panel::after, .lap::after {
+    content: ""; position: absolute; inset: -2px; border-radius: 10px;
+    padding: 2px; pointer-events: none; opacity: 0;
+    background: conic-gradient(from var(--a),
+      transparent 0deg 295deg, rgba(255, 233, 176, .9) 330deg,
+      #f7c04a 345deg, transparent 360deg);
+    -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+    -webkit-mask-composite: xor; mask-composite: exclude;
+  }
+  @media (prefers-reduced-motion: no-preference) {
+    .stage.steady .panel::after, .stage.steady .lap::after {
+      animation: glint 1.4s ease-in-out .75s forwards;
+    }
+    @keyframes glint {
+      0% { --a: 0deg; opacity: 0; }
+      15% { opacity: 1; }
+      85% { opacity: 1; }
+      100% { --a: 360deg; opacity: 0; }
+    }
   }
   .stage.steady .panel, .stage.steady .lap { transition-duration: .95s; }
   .panel { width: clamp(9rem, 26vw, 13rem); aspect-ratio: 3008 / 1692; }
