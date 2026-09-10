@@ -206,6 +206,11 @@
   }
   .stage.steady .seam { opacity: .95; }
   .demo .caption { margin-top: 2.2rem; }
+  .flip { display: grid; }
+  .flip span { grid-area: 1 / 1; transition: opacity .6s, transform .6s; }
+  .flip .t2 { opacity: 0; transform: translateY(.45rem); transition-delay: .5s; }
+  .flip.steadied .t1 { opacity: 0; transform: translateY(-.45rem); }
+  .flip.steadied .t2 { opacity: 1; transform: none; }
 
   /* scroll reveal, CSS only, motion-safe */
   @media (prefers-reduced-motion: no-preference) {
@@ -253,7 +258,10 @@
 <section class="slide demo">
   <div class="wrap">
     <p class="kicker">The demo</p>
-    <p class="quoteish">Your desk, most mornings.</p>
+    <p class="quoteish flip" id="demotitle">
+      <span class="t1">Your desk, most mornings.</span>
+      <span class="t2">Your desk, from now on.</span>
+    </p>
     <div class="stage" id="stage" aria-label="Two displays swapping erratically until they settle side by side, laptop centred underneath" role="img">
       <div class="panel" id="pA"><span>1</span></div>
       <div class="panel" id="pB"><span>2</span></div>
@@ -362,6 +370,7 @@ docksteady init</code>
   const stage = document.getElementById("stage");
   const pA = document.getElementById("pA"), pB = document.getElementById("pB");
   const lap = document.getElementById("lap"), seam = document.getElementById("seam");
+  const title = document.getElementById("demotitle");
   const calm = matchMedia("(prefers-reduced-motion: reduce)").matches;
   let panelW, panelH, lapH, panelY, lapY, swapped = false, steady = false, timer;
 
@@ -403,12 +412,18 @@ docksteady init</code>
   }
   measure();
   addEventListener("resize", function () { measure(); if (steady || calm) rest(); });
-  if (calm) { rest(); return; }
+  if (calm) { rest(); title.classList.add("steadied"); return; }
   rest(); stage.classList.remove("steady");
   new IntersectionObserver(function (entries) {
     entries.forEach(function (e) {
-      if (e.isIntersecting) { steady = true; clearTimeout(timer); rest(); }
-      else { steady = false; stage.classList.remove("steady"); clearTimeout(timer); timer = setTimeout(tick, 300); }
+      if (e.isIntersecting) {
+        steady = true; clearTimeout(timer); rest();
+        title.classList.add("steadied");
+      } else {
+        steady = false; stage.classList.remove("steady");
+        title.classList.remove("steadied");
+        clearTimeout(timer); timer = setTimeout(tick, 300);
+      }
     });
   }, { rootMargin: "0px 0px -50% 0px" }).observe(stage);
 })();
