@@ -1,5 +1,7 @@
 # docksteady
 
+![The docksteady wordmark rendered with light rays streaming through the letters, above the tagline "Steady. Beyond belief."](docs/hero.png)
+
 docksteady keeps your Mac's external displays in the arrangement you chose,
 even when macOS cannot tell them apart.
 
