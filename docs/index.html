@@ -101,10 +101,12 @@
       to { transform: rotate(47deg); }
     }
   }
-  /* ?shot captures skip the reveal so stills are instantly complete */
+  /* ?shot captures skip the reveal so stills are instantly complete,
+     and keep only the typography: kicker, wordmark, tagline */
   .hero.shot :is(.kicker, .h1wrap, #glhero, .tag, .sub, .cta-row) {
     animation: none !important; opacity: 1 !important; transform: none !important;
   }
+  .hero.shot .sub, .hero.shot .cta-row { opacity: 0 !important; }
   /* WebGL god rays replace the CSS approximation when they boot */
   #glhero {
     position: absolute; inset: 0; z-index: 0; width: 100%; height: 100%;
