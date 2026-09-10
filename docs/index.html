@@ -7,7 +7,7 @@
 <meta name="description" content="Two identical monitors. One shared serial. macOS guesses. We don't. docksteady keeps your Mac's display arrangement steady.">
 <meta property="og:title" content="docksteady — Steady. Beyond belief.">
 <meta property="og:description" content="The most steady thing we've ever shipped. Free. Because courage.">
-<meta property="og:image" content="https://den-frie-vilje.github.io/docksteady/hero.png">
+<meta property="og:image" content="https://den-frie-vilje.github.io/docksteady/og.png">
 <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🖥️</text></svg>">
 <style>
   :root {
@@ -103,9 +103,12 @@
   }
   /* ?shot captures skip the reveal so stills are instantly complete,
      and keep only the typography: kicker, wordmark, tagline */
-  .hero.shot :is(.kicker, .h1wrap, #glhero, .tag, .sub, .cta-row) {
+  /* #glhero kept out of :is() so its ID specificity cannot outrank the
+     hide rule below */
+  .hero.shot :is(.kicker, .h1wrap, .tag, .sub, .cta-row) {
     animation: none !important; opacity: 1 !important; transform: none !important;
   }
+  .hero.shot #glhero { animation: none !important; opacity: 1 !important; }
   .hero.shot .sub, .hero.shot .cta-row { opacity: 0 !important; }
   /* WebGL god rays replace the CSS approximation when they boot */
   #glhero {
@@ -509,7 +512,10 @@ docksteady init</code>
   }
   function check() {
     const r = stage.getBoundingClientRect(), h = innerHeight;
-    const limit = settled ? h * 0.56 : h * 0.5;
+    // portrait viewports settle earlier: demanding the upper half on a
+    // tall phone screen makes the moment arrive too late
+    const base = innerHeight > innerWidth ? 0.66 : 0.5;
+    const limit = settled ? h * (base + 0.06) : h * base;
     const shouldSettle = r.bottom <= limit;
     const inView = r.top < h * 1.15 && r.bottom > -r.height * 0.25;
     if (shouldSettle && !settled) {
