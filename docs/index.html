@@ -45,20 +45,29 @@
     position: relative; overflow: hidden;
   }
   .hero > * { position: relative; z-index: 1; }
+  /* fallback light when WebGL is unavailable: a soft fan of veils,
+     broad feathered wedges blurred wide, swaying gently, never spokes */
   .light {
     position: absolute; left: 50%; top: 46%; z-index: 0;
     width: min(72rem, 130vw); aspect-ratio: 1;
     transform: translate(-50%, -50%);
-    background:
-      radial-gradient(closest-side, rgba(122, 92, 255, .30), rgba(122, 92, 255, 0) 70%),
-      repeating-conic-gradient(from 0deg,
-        rgba(170, 195, 255, 0) 0deg 9deg,
-        rgba(170, 195, 255, .11) 9deg 11.5deg,
-        rgba(170, 195, 255, 0) 11.5deg 20deg);
-    -webkit-mask-image: radial-gradient(closest-side, #000 28%, transparent 72%);
-    mask-image: radial-gradient(closest-side, #000 28%, transparent 72%);
+    background: radial-gradient(closest-side,
+      rgba(122, 92, 255, .26), rgba(122, 92, 255, 0) 70%);
+    -webkit-mask-image: radial-gradient(closest-side, #000 24%, transparent 70%);
+    mask-image: radial-gradient(closest-side, #000 24%, transparent 70%);
     pointer-events: none;
   }
+  .light::before, .light::after {
+    content: ""; position: absolute; inset: 0; border-radius: 50%;
+    background: conic-gradient(from -20deg,
+      transparent 0deg, rgba(170, 195, 255, .10) 16deg, transparent 46deg,
+      rgba(205, 170, 255, .07) 78deg, transparent 112deg,
+      rgba(170, 195, 255, .11) 158deg, transparent 200deg,
+      rgba(255, 170, 220, .06) 246deg, transparent 288deg,
+      rgba(170, 195, 255, .08) 330deg, transparent 360deg);
+    filter: blur(24px);
+  }
+  .light::after { filter: blur(40px); opacity: .8; transform: rotate(38deg); }
   /* padding-bottom keeps descenders inside the background box that
      background-clip: text paints; without it the y's tail goes transparent */
   .hero h1 {
@@ -80,9 +89,15 @@
       from { background-position: -50% 40%, 0 0; }
       to   { background-position: 150% 40%, 0 0; }
     }
-    .light { animation: spin 90s linear infinite; }
-    @keyframes spin {
-      to { transform: translate(-50%, -50%) rotate(360deg); }
+    .light::before { animation: swayA 26s ease-in-out infinite alternate; }
+    .light::after { animation: swayB 34s ease-in-out infinite alternate-reverse; }
+    @keyframes swayA {
+      from { transform: rotate(-9deg); }
+      to { transform: rotate(9deg); }
+    }
+    @keyframes swayB {
+      from { transform: rotate(29deg); }
+      to { transform: rotate(47deg); }
     }
   }
   /* WebGL god rays replace the CSS approximation when they boot */
@@ -194,26 +209,35 @@
   }
   .stage.steady .panel, .stage.steady .lap {
     border-color: rgba(247, 192, 74, .6);
+    box-shadow: 0 18px 40px rgba(0, 0, 0, .5), 0 0 20px rgba(247, 192, 74, .32);
   }
-  @property --a { syntax: "<angle>"; inherits: false; initial-value: 0deg; }
-  .panel::after, .lap::after {
-    content: ""; position: absolute; inset: -2px; border-radius: 10px;
-    padding: 2px; pointer-events: none; opacity: 0;
-    background: conic-gradient(from var(--a),
-      transparent 0deg 295deg, rgba(255, 233, 176, .9) 330deg,
-      #f7c04a 345deg, transparent 360deg);
-    -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
-    -webkit-mask-composite: xor; mask-composite: exclude;
-  }
-  @media (prefers-reduced-motion: no-preference) {
-    .stage.steady .panel::after, .stage.steady .lap::after {
-      animation: glint 1.4s ease-in-out .75s forwards;
+  .panel, .lap { transition-property: transform, filter, border-color, box-shadow; }
+  /* static rest positions: what no-JS (and pre-JS) visitors see */
+  #pA { transform: translate(-100%, calc(-50% - 2.1rem)); }
+  #pB { transform: translate(0%, calc(-50% - 2.1rem)); }
+  #lap { transform: translate(-50%, calc(-50% + 3.6rem)); }
+  /* conic border lap, only where the ring can actually be masked */
+  @supports ((mask-composite: exclude) or (-webkit-mask-composite: xor)) {
+    @property --a { syntax: "<angle>"; inherits: false; initial-value: 0deg; }
+    .panel::after, .lap::after {
+      content: ""; position: absolute; inset: -2px; border-radius: 10px;
+      padding: 2px; pointer-events: none; opacity: 0;
+      background: conic-gradient(from var(--a),
+        transparent 0deg 295deg, rgba(255, 233, 176, .9) 330deg,
+        #f7c04a 345deg, transparent 360deg);
+      -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+      -webkit-mask-composite: xor; mask-composite: exclude;
     }
-    @keyframes glint {
-      0% { --a: 0deg; opacity: 0; }
-      15% { opacity: 1; }
-      85% { opacity: 1; }
-      100% { --a: 360deg; opacity: 0; }
+    @media (prefers-reduced-motion: no-preference) {
+      .stage.steady .panel::after, .stage.steady .lap::after {
+        animation: glint 1.4s ease-in-out .75s forwards;
+      }
+      @keyframes glint {
+        0% { --a: 0deg; opacity: 0; }
+        15% { opacity: 1; }
+        85% { opacity: 1; }
+        100% { --a: 360deg; opacity: 0; }
+      }
     }
   }
   .stage.steady .panel, .stage.steady .lap { transition-duration: .95s; }
