@@ -101,6 +101,10 @@
       to { transform: rotate(47deg); }
     }
   }
+  /* ?shot captures skip the reveal so stills are instantly complete */
+  .hero.shot :is(.kicker, .h1wrap, #glhero, .tag, .sub, .cta-row) {
+    animation: none !important; opacity: 1 !important; transform: none !important;
+  }
   /* WebGL god rays replace the CSS approximation when they boot */
   #glhero {
     position: absolute; inset: 0; z-index: 0; width: 100%; height: 100%;
@@ -537,6 +541,7 @@ docksteady init</code>
   // ?shot freezes the light and preserves the buffer, for capturing
   // the wordmark render as a still (see docs/hero.png in the repo)
   const shot = location.search.indexOf("shot") >= 0;
+  if (shot) hero.classList.add("shot");
   const gl = canvas.getContext("webgl",
     { alpha: true, antialias: false, preserveDrawingBuffer: shot });
   if (!gl) return;
