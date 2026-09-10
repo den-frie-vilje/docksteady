@@ -7,6 +7,7 @@
 <meta name="description" content="Two identical monitors. One shared serial. macOS guesses. We don't. docksteady keeps your Mac's display arrangement steady.">
 <meta property="og:title" content="docksteady — Steady. Beyond belief.">
 <meta property="og:description" content="The most steady thing we've ever shipped. Free. Because courage.">
+<meta property="og:image" content="https://den-frie-vilje.github.io/docksteady/hero.png">
 <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🖥️</text></svg>">
 <style>
   :root {
@@ -533,7 +534,11 @@ docksteady init</code>
   const hero = document.getElementById("hero");
   const canvas = document.getElementById("glhero");
   const h1 = document.getElementById("wordmark");
-  const gl = canvas.getContext("webgl", { alpha: true, antialias: false });
+  // ?shot freezes the light and preserves the buffer, for capturing
+  // the wordmark render as a still (see docs/hero.png in the repo)
+  const shot = location.search.indexOf("shot") >= 0;
+  const gl = canvas.getContext("webgl",
+    { alpha: true, antialias: false, preserveDrawingBuffer: shot });
   if (!gl) return;
 
   const vsrc = "attribute vec2 aP; varying vec2 vUv;" +
@@ -599,7 +604,7 @@ docksteady init</code>
 
   let glyphY = 0.42;
   function layout() {
-    const dpr = Math.min(devicePixelRatio || 1, 2);
+    const dpr = shot ? 2 : Math.min(devicePixelRatio || 1, 2);
     const w = hero.offsetWidth, h = hero.offsetHeight;
     canvas.width = w * dpr; canvas.height = h * dpr;
     gl.viewport(0, 0, canvas.width, canvas.height);
@@ -624,8 +629,8 @@ docksteady init</code>
   }
   let raf, visible = true;
   function frame(t) {
-    const x = 0.5 + 0.46 * Math.sin(t * 0.00035);
-    const y = glyphY - 0.10 + 0.05 * Math.sin(t * 0.0006);
+    const x = shot ? 0.71 : 0.5 + 0.46 * Math.sin(t * 0.00035);
+    const y = shot ? glyphY - 0.09 : glyphY - 0.10 + 0.05 * Math.sin(t * 0.0006);
     gl.uniform2f(uLight, x, y);
     gl.clearColor(0, 0, 0, 0); gl.clear(gl.COLOR_BUFFER_BIT);
     gl.drawArrays(gl.TRIANGLES, 0, 3);
