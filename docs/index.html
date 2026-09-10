@@ -414,7 +414,7 @@ docksteady init</code>
 (function () {
   const stage = document.getElementById("stage");
   const section = document.querySelector(".demo");
-  if (!stage || !section || !("IntersectionObserver" in window)) return;
+  if (!stage || !section || typeof requestAnimationFrame !== "function") return;
   section.style.display = "block";
   const pA = document.getElementById("pA"), pB = document.getElementById("pB");
   const lap = document.getElementById("lap"), seam = document.getElementById("seam");
@@ -471,7 +471,7 @@ docksteady init</code>
     stage.classList.add("steady");
   }
   function tick() {
-    if (steady) return;
+    if (steady || !running) return;
     swapped = !swapped;
     const front = Math.random() < .5 ? pA : pB;
     const back = front === pA ? pB : pA;
@@ -492,18 +492,35 @@ docksteady init</code>
   addEventListener("resize", function () { measure(); if (steady || calm) rest(); });
   if (calm) { rest(); ttext.textContent = LINE_B; return; }
   rest(); stage.classList.remove("steady");
-  new IntersectionObserver(function (entries) {
-    entries.forEach(function (e) {
-      if (e.isIntersecting) {
-        steady = true; clearTimeout(timer); rest();
-        typeTo(LINE_B);
-      } else {
-        steady = false; stage.classList.remove("steady");
-        typeTo(LINE_A);
-        clearTimeout(timer); timer = setTimeout(tick, 300);
-      }
-    });
-  }, { rootMargin: "0px 0px -50% 0px" }).observe(stage);
+  // settle only once the stage's BOTTOM edge is in the viewport's upper
+  // half; hysteresis below the line stops boundary jitter, and a stage
+  // scrolled above the viewport stays settled
+  let settled = false, running = false, pend = false;
+  function setChaos(on) {
+    if (on && !running) { running = true; timer = setTimeout(tick, 250); }
+    else if (!on && running) { running = false; clearTimeout(timer); }
+  }
+  function check() {
+    const r = stage.getBoundingClientRect(), h = innerHeight;
+    const limit = settled ? h * 0.56 : h * 0.5;
+    const shouldSettle = r.bottom <= limit;
+    const inView = r.top < h * 1.15 && r.bottom > -r.height * 0.25;
+    if (shouldSettle && !settled) {
+      settled = true; steady = true; setChaos(false); rest(); typeTo(LINE_B);
+    } else if (!shouldSettle && settled) {
+      settled = false; steady = false; stage.classList.remove("steady");
+      typeTo(LINE_A);
+    }
+    setChaos(!settled && inView);
+  }
+  function onScroll() {
+    if (pend) return;
+    pend = true;
+    requestAnimationFrame(function () { pend = false; check(); });
+  }
+  addEventListener("scroll", onScroll, { passive: true });
+  addEventListener("resize", onScroll);
+  check();
 })();
 </script>
 <script>
