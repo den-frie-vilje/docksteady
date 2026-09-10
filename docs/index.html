@@ -1,0 +1,248 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>docksteady — Steady. Beyond belief.</title>
+<meta name="description" content="Two identical monitors. One shared serial. macOS guesses. We don't. docksteady keeps your Mac's display arrangement steady.">
+<meta property="og:title" content="docksteady — Steady. Beyond belief.">
+<meta property="og:description" content="The most steady thing we've ever shipped. Free. Because courage.">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🖥️</text></svg>">
+<style>
+  :root {
+    --bg: #0b0b0f;
+    --panel: #16161c;
+    --ink: #f5f5f2;
+    --dim: #a8a8b0;
+    --line: #26262e;
+    --grad: linear-gradient(92deg, #3fd8ff 0%, #7a5cff 45%, #ff4fa3 100%);
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    background: var(--bg);
+    color: var(--ink);
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Helvetica Neue", sans-serif;
+    -webkit-font-smoothing: antialiased;
+    line-height: 1.5;
+  }
+  section { padding: clamp(5rem, 12vh, 9rem) 1.5rem; }
+  .wrap { max-width: 60rem; margin: 0 auto; }
+  .narrow { max-width: 42rem; margin: 0 auto; }
+
+  .kicker {
+    text-transform: uppercase; letter-spacing: .22em; font-size: .78rem;
+    color: var(--dim); margin-bottom: 1.2rem;
+  }
+  h1, h2 { font-weight: 700; letter-spacing: -0.02em; }
+  h2 { font-size: clamp(2rem, 5.5vw, 3.6rem); line-height: 1.08; margin-bottom: 1.4rem; }
+  p.lead { font-size: clamp(1.1rem, 2.2vw, 1.45rem); color: var(--dim); }
+  p.lead strong { color: var(--ink); font-weight: 600; }
+
+  /* hero */
+  .hero { text-align: center; padding-top: clamp(6rem, 18vh, 12rem); }
+  .hero h1 {
+    font-size: clamp(3.4rem, 13vw, 9.5rem); line-height: .95;
+    background: var(--grad); -webkit-background-clip: text; background-clip: text;
+    color: transparent; margin-bottom: 1.2rem;
+  }
+  .hero .tag { font-size: clamp(1.4rem, 3.4vw, 2.3rem); font-weight: 600; }
+  .hero .sub { margin-top: 1rem; }
+  .cta-row { margin-top: 2.6rem; display: flex; gap: 1rem; justify-content: center; flex-wrap: wrap; }
+  .btn {
+    display: inline-block; padding: .85rem 1.8rem; border-radius: 999px;
+    text-decoration: none; font-weight: 600; font-size: 1.02rem;
+  }
+  .btn-fill { background: var(--ink); color: #101014; }
+  .btn-ghost { color: var(--ink); border: 1px solid var(--line); }
+  .btn:hover { opacity: .85; }
+
+  .ribbon {
+    text-align: center; padding: 1.1rem 1.5rem; border-top: 1px solid var(--line);
+    border-bottom: 1px solid var(--line); color: var(--dim); font-size: .95rem;
+  }
+
+  .slide { text-align: center; }
+  .quoteish {
+    font-size: clamp(1.6rem, 4.4vw, 2.9rem); font-weight: 700; letter-spacing: -0.02em;
+    line-height: 1.15; max-width: 52rem; margin: 0 auto 1.6rem;
+  }
+
+  /* feature grid */
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(17rem, 1fr)); gap: 1.1rem; margin-top: 2.6rem; }
+  .card {
+    background: var(--panel); border: 1px solid var(--line); border-radius: 20px;
+    padding: 1.7rem 1.5rem; text-align: left;
+  }
+  .card h3 { font-size: 1.22rem; margin-bottom: .55rem; letter-spacing: -0.01em; }
+  .card p { color: var(--dim); font-size: .98rem; }
+
+  /* numbers strip */
+  .numbers { display: flex; flex-wrap: wrap; gap: 2.4rem 3.4rem; justify-content: center; margin-top: 2.4rem; }
+  .num { text-align: center; }
+  .num b {
+    display: block; font-size: clamp(2.2rem, 5vw, 3.4rem); font-weight: 700;
+    background: var(--grad); -webkit-background-clip: text; background-clip: text; color: transparent;
+  }
+  .num span { color: var(--dim); font-size: .92rem; }
+
+  /* terminal */
+  .term {
+    background: #060608; border: 1px solid var(--line); border-radius: 14px;
+    text-align: left; font-family: ui-monospace, "SF Mono", Menlo, monospace;
+    font-size: .95rem; padding: 1.3rem 1.4rem; margin: 2.2rem auto 0; max-width: 40rem;
+    overflow-x: auto; position: relative;
+  }
+  .term code { display: block; white-space: pre; color: #d8f7d0; }
+  .term .dollar { color: var(--dim); user-select: none; }
+  .copy {
+    position: absolute; top: .7rem; right: .8rem; background: var(--panel);
+    color: var(--dim); border: 1px solid var(--line); border-radius: 8px;
+    font: inherit; font-size: .78rem; padding: .3rem .7rem; cursor: pointer;
+  }
+  .copy:hover { color: var(--ink); }
+
+  footer {
+    border-top: 1px solid var(--line); padding: 3rem 1.5rem 4rem;
+    color: var(--dim); font-size: .88rem; text-align: center;
+  }
+  footer a { color: var(--ink); }
+  footer p { max-width: 44rem; margin: 0 auto .8rem; }
+
+  a { color: inherit; }
+
+  /* scroll reveal, CSS only, motion-safe */
+  @media (prefers-reduced-motion: no-preference) {
+    @supports (animation-timeline: view()) {
+      .reveal {
+        animation: rise both;
+        animation-timeline: view();
+        animation-range: entry 0% entry 55%;
+      }
+      @keyframes rise {
+        from { opacity: 0; transform: translateY(2.2rem); }
+        to { opacity: 1; transform: none; }
+      }
+    }
+  }
+</style>
+</head>
+<body>
+
+<section class="hero">
+  <p class="kicker">Den Frie Vilje presents</p>
+  <h1>docksteady</h1>
+  <p class="tag">Steady. Beyond belief.</p>
+  <p class="lead sub">Two identical monitors. One shared serial.<br>macOS guesses. We don't.</p>
+  <div class="cta-row">
+    <a class="btn btn-fill" href="#install">Get steady</a>
+    <a class="btn btn-ghost" href="https://github.com/den-frie-vilje/docksteady">View the source</a>
+  </div>
+</section>
+
+<div class="ribbon">It just works.* &nbsp;&nbsp;<em>*Now including which side.</em></div>
+
+<section class="slide reveal">
+  <div class="wrap">
+    <p class="kicker">The problem</p>
+    <p class="quoteish">Two displays. One identity.<br>That's not minimalism. That's a coin flip.</p>
+    <p class="lead narrow">Every same-model panel ships the same placeholder serial in its identity
+    record. macOS reads it, shrugs, and re-deals your desk on every reconnect.
+    You're not arranging it wrong. <strong>It's not you. It's your EDID.</strong></p>
+  </div>
+</section>
+
+<section class="slide reveal">
+  <div class="wrap">
+    <p class="kicker">The breakthrough</p>
+    <h2>Introducing the Serial Engine.</h2>
+    <p class="lead narrow">Deep in IOKit, every panel still whispers its true factory serial.
+    The one on the sticker. The one macOS heroically ignores. docksteady chains it through
+    the display pipe to the window server: a firm link between glass and identity.
+    We call it grounding. <strong>Because it grounds things.</strong></p>
+  </div>
+</section>
+
+<section class="reveal">
+  <div class="wrap slide">
+    <p class="kicker">Features. So many features.</p>
+    <h2>Our most complete docksteady ever.</h2>
+  </div>
+  <div class="wrap grid">
+    <div class="card"><h3>Steady Modes</h3><p>Lid open. Clamshell. Each arrangement remembered.
+      Seamlessly? No. Separately. Which is better.</p></div>
+    <div class="card"><h3>Dynamic Poll</h3><p>Checks every 45 seconds. All day. Every day.
+      It never sleeps, except when your Mac does. It's a while loop. A pro while loop.</p></div>
+    <div class="card"><h3>Geometry Replay</h3><p>Your exact arrangement, replayed to the pixel.
+      Any offset. Any seam. Industry-leading sameness.</p></div>
+    <div class="card"><h3>Swap Windows. Boom.</h3><p>When macOS trades your windows, one click
+      sweeps them home. Full screen included. Split View comes back as two Spaces. That's growth.</p></div>
+    <div class="card"><h3>Privacy. Obviously.</h3><p>No network. No telemetry. No account.
+      It doesn't even want to know your name. It wants to know your serial. The monitor's.</p></div>
+    <div class="card"><h3>It Stands Down</h3><p>Arranging displays yourself? docksteady waits,
+      respectfully. A good butler, with a launchd contract.</p></div>
+  </div>
+</section>
+
+<section class="slide reveal">
+  <div class="wrap">
+    <p class="kicker">The numbers</p>
+    <div class="numbers">
+      <div class="num"><b>2</b><span>identical panels</span></div>
+      <div class="num"><b>1</b><span>source of truth</span></div>
+      <div class="num"><b>45s</b><span>dynamic poll</span></div>
+      <div class="num"><b>36</b><span>review findings, all fixed</span></div>
+      <div class="num"><b>0</b><span>telemetry, dollars, guessing</span></div>
+    </div>
+  </div>
+</section>
+
+<section class="slide reveal">
+  <div class="wrap">
+    <p class="kicker">Honesty. A courageous feature.</p>
+    <p class="quoteish">Windows travel with the display.<br>Nobody can change that.<br>
+    Not even the people who caused it.</p>
+    <p class="lead narrow">That's the architecture. docksteady re-pins your arrangement within
+    seconds, then hands you one command for the windows. We could call it magic.
+    It's a swap. <strong>A really good swap.</strong></p>
+  </div>
+</section>
+
+<section class="slide reveal" id="install">
+  <div class="wrap">
+    <p class="kicker">Available today</p>
+    <h2>Not on a truck. On brew.</h2>
+    <div class="term">
+      <button class="copy" onclick="navigator.clipboard.writeText(document.getElementById('cmds').innerText)">Copy</button>
+      <code id="cmds">brew install den-frie-vilje/tap/docksteady
+brew install jakehilborn/jakehilborn/displayplacer
+brew services start sleepwatcher
+docksteady init</code>
+    </div>
+    <p class="lead" style="margin-top:1.6rem">The price? We removed it. <strong>Courage.</strong></p>
+  </div>
+</section>
+
+<section class="slide reveal">
+  <div class="wrap">
+    <p class="kicker">One more thing</p>
+    <p class="quoteish">It's one Python file.<br>You can read it. All of it.</p>
+    <p class="lead narrow">Radical transparency. Or, as we call it: a file.</p>
+    <div class="cta-row">
+      <a class="btn btn-fill" href="https://github.com/den-frie-vilje/docksteady/blob/main/docksteady">Read the source</a>
+      <a class="btn btn-ghost" href="https://github.com/den-frie-vilje/docksteady#readme">Read the README</a>
+    </div>
+  </div>
+</section>
+
+<footer>
+  <p>Requires Apple silicon, macOS 26, exactly two identical external displays, a dock,
+  and the will to be free. MIT licensed.</p>
+  <p>Designed by <a href="https://denfrievilje.dk">Den Frie Vilje</a> in Copenhagen.
+  No part of this website was assembled in California.</p>
+  <p>This page parodies a register, not a company. Not affiliated with, endorsed by,
+  or acquired by Apple. Yet.</p>
+</footer>
+
+</body>
+</html>
