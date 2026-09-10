@@ -1,9 +1,9 @@
-# docksteady
+# 🖥️ docksteady
 
 ![The docksteady wordmark rendered with light rays streaming through the letters, above the tagline "Steady. Beyond belief."](docs/hero.png)
 
-docksteady keeps your Mac's external displays in the arrangement you chose,
-even when macOS cannot tell them apart.
+> docksteady keeps your Mac's external displays in the arrangement you chose,
+> even when macOS cannot tell them apart.
 
 ## Check whether you need it
 
@@ -225,7 +225,8 @@ snapshot: your geometry stays put, but identity mix-ups go undetected until
 a docksteady update restores the link. Everything runs as your user, with no
 elevated privileges and no network access.
 
-**Warning:** never disable one of two identical panels with displayplacer
+> [!CAUTION]
+> Never disable one of two identical panels with displayplacer
 (`enabled:false`). macOS loses the panel beyond software recovery, and only
 replugging it, sometimes with a dock power-cycle, brings it back. docksteady
 never does this, and neither should you.
