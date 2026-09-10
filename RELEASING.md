@@ -43,3 +43,6 @@ windows, triggers surviving uninstall), so the gate has earned its place.
    changed on a real desk before considering the release done. If the
    change touched the LaunchAgent or wake hook, rerun `docksteady init` and
    verify both regenerated correctly.
+5. If the release changed facts the landing page states (requirements,
+   install commands, the numbers slide's review-findings count), update
+   `docs/index.html`; GitHub Pages redeploys on push.
