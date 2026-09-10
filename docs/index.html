@@ -255,11 +255,12 @@
   }
   .stage.steady .seam { opacity: .95; }
   .demo .caption { margin-top: 2.2rem; }
-  .flip { display: grid; }
-  .flip span { grid-area: 1 / 1; transition: opacity .6s, transform .6s; }
-  .flip .t2 { opacity: 0; transform: translateY(.45rem); transition-delay: .5s; }
-  .flip.steadied .t1 { opacity: 0; transform: translateY(-.45rem); }
-  .flip.steadied .t2 { opacity: 1; transform: none; }
+  .typeline .caret {
+    display: inline-block; width: .07em; height: .95em; margin-left: .05em;
+    background: currentColor; vertical-align: -.08em; opacity: 0;
+  }
+  .typeline.typing .caret { animation: blink .85s step-end infinite; }
+  @keyframes blink { 50% { opacity: 1; } }
 
   /* scroll reveal, CSS only, motion-safe */
   @media (prefers-reduced-motion: no-preference) {
@@ -307,10 +308,7 @@
 <section class="slide demo">
   <div class="wrap">
     <p class="kicker">The demo</p>
-    <p class="quoteish flip" id="demotitle">
-      <span class="t1">Your desk, most mornings.</span>
-      <span class="t2">Your desk, from now on.</span>
-    </p>
+    <p class="quoteish typeline" id="demotitle"><span id="typetext">Your desk, most mornings.</span><span class="caret" aria-hidden="true"></span></p>
     <div class="stage" id="stage" aria-label="Two displays swapping erratically until they settle side by side, laptop centred underneath" role="img">
       <div class="panel" id="pA"><span>1</span></div>
       <div class="panel" id="pB"><span>2</span></div>
@@ -420,6 +418,36 @@ docksteady init</code>
   const pA = document.getElementById("pA"), pB = document.getElementById("pB");
   const lap = document.getElementById("lap"), seam = document.getElementById("seam");
   const title = document.getElementById("demotitle");
+  const ttext = document.getElementById("typetext");
+  const LINE_A = "Your desk, most mornings.";
+  const LINE_B = "Your desk, from now on.";
+  let tgen = 0;
+  function typeTo(target) {
+    const id = ++tgen;
+    title.classList.add("typing");
+    function del() {
+      if (id !== tgen) return;
+      const cur = ttext.textContent;
+      let common = 0;
+      while (common < Math.min(cur.length, target.length)
+             && cur[common] === target[common]) common++;
+      if (cur.length > common) {
+        ttext.textContent = cur.slice(0, -1);
+        setTimeout(del, 26 + Math.random() * 24);
+      } else setTimeout(type, 220);
+    }
+    function type() {
+      if (id !== tgen) return;
+      const cur = ttext.textContent;
+      if (cur.length < target.length) {
+        ttext.textContent = target.slice(0, cur.length + 1);
+        setTimeout(type, 40 + Math.random() * 55);
+      } else setTimeout(function () {
+        if (id === tgen) title.classList.remove("typing");
+      }, 900);
+    }
+    del();
+  }
   const calm = matchMedia("(prefers-reduced-motion: reduce)").matches;
   let panelW, panelH, lapH, panelY, lapY, swapped = false, steady = false, timer;
 
@@ -461,16 +489,16 @@ docksteady init</code>
   }
   measure();
   addEventListener("resize", function () { measure(); if (steady || calm) rest(); });
-  if (calm) { rest(); title.classList.add("steadied"); return; }
+  if (calm) { rest(); ttext.textContent = LINE_B; return; }
   rest(); stage.classList.remove("steady");
   new IntersectionObserver(function (entries) {
     entries.forEach(function (e) {
       if (e.isIntersecting) {
         steady = true; clearTimeout(timer); rest();
-        title.classList.add("steadied");
+        typeTo(LINE_B);
       } else {
         steady = false; stage.classList.remove("steady");
-        title.classList.remove("steadied");
+        typeTo(LINE_A);
         clearTimeout(timer); timer = setTimeout(tick, 300);
       }
     });
