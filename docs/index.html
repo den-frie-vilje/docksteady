@@ -40,11 +40,50 @@
   p.lead strong { color: var(--ink); font-weight: 600; }
 
   /* hero */
-  .hero { text-align: center; padding-top: clamp(6rem, 18vh, 12rem); }
+  .hero {
+    text-align: center; padding-top: clamp(6rem, 18vh, 12rem);
+    position: relative; overflow: hidden;
+  }
+  .hero > * { position: relative; z-index: 1; }
+  .light {
+    position: absolute; left: 50%; top: 46%; z-index: 0;
+    width: min(72rem, 130vw); aspect-ratio: 1;
+    transform: translate(-50%, -50%);
+    background:
+      radial-gradient(closest-side, rgba(122, 92, 255, .30), rgba(122, 92, 255, 0) 70%),
+      repeating-conic-gradient(from 0deg,
+        rgba(170, 195, 255, 0) 0deg 9deg,
+        rgba(170, 195, 255, .11) 9deg 11.5deg,
+        rgba(170, 195, 255, 0) 11.5deg 20deg);
+    -webkit-mask-image: radial-gradient(closest-side, #000 28%, transparent 72%);
+    mask-image: radial-gradient(closest-side, #000 28%, transparent 72%);
+    pointer-events: none;
+  }
+  /* padding-bottom keeps descenders inside the background box that
+     background-clip: text paints; without it the y's tail goes transparent */
   .hero h1 {
-    font-size: clamp(3.4rem, 13vw, 9.5rem); line-height: .95;
-    background: var(--grad); -webkit-background-clip: text; background-clip: text;
-    color: transparent; margin-bottom: 1.2rem;
+    font-size: clamp(3.4rem, 13vw, 9.5rem); line-height: 1;
+    padding-bottom: .14em; margin-bottom: calc(1.2rem - .14em);
+    background-image:
+      radial-gradient(closest-side circle at 50% 42%,
+        rgba(255, 255, 255, .95), rgba(255, 255, 255, 0) 62%),
+      var(--grad);
+    background-size: 36% 120%, 100% 100%;
+    background-repeat: no-repeat;
+    background-position: -50% 40%, 0 0;
+    -webkit-background-clip: text; background-clip: text;
+    color: transparent;
+  }
+  @media (prefers-reduced-motion: no-preference) {
+    .hero h1 { animation: sweep 7s ease-in-out infinite alternate; }
+    @keyframes sweep {
+      from { background-position: -50% 40%, 0 0; }
+      to   { background-position: 150% 40%, 0 0; }
+    }
+    .light { animation: spin 90s linear infinite; }
+    @keyframes spin {
+      to { transform: translate(-50%, -50%) rotate(360deg); }
+    }
   }
   .hero .tag { font-size: clamp(1.4rem, 3.4vw, 2.3rem); font-weight: 600; }
   .hero .sub { margin-top: 1rem; }
@@ -130,6 +169,7 @@
 <body>
 
 <section class="hero">
+  <div class="light" aria-hidden="true"></div>
   <p class="kicker">Den Frie Vilje presents</p>
   <h1>docksteady</h1>
   <p class="tag">Steady. Beyond belief.</p>
