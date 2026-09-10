@@ -75,7 +75,7 @@
     color: transparent;
   }
   @media (prefers-reduced-motion: no-preference) {
-    .hero h1 { animation: sweep 7s ease-in-out infinite alternate; }
+    .hero:not(.gl) h1 { animation: sweep 7s ease-in-out infinite alternate; }
     @keyframes sweep {
       from { background-position: -50% 40%, 0 0; }
       to   { background-position: 150% 40%, 0 0; }
@@ -83,6 +83,33 @@
     .light { animation: spin 90s linear infinite; }
     @keyframes spin {
       to { transform: translate(-50%, -50%) rotate(360deg); }
+    }
+  }
+  /* WebGL god rays replace the CSS approximation when they boot */
+  #glhero {
+    position: absolute; inset: 0; z-index: 0; width: 100%; height: 100%;
+    pointer-events: none; display: none;
+  }
+  .hero.gl #glhero { display: block; }
+  .hero.gl .light { display: none; }
+  .hero.gl h1 {
+    background: none; color: transparent; -webkit-text-fill-color: transparent;
+  }
+  /* staggered opening */
+  @media (prefers-reduced-motion: no-preference) {
+    .hero .kicker, .hero .h1wrap, .hero #glhero, .hero .tag, .hero .sub,
+    .hero .cta-row, .ribbon {
+      opacity: 0; animation: enter .8s cubic-bezier(.2, .6, .2, 1) forwards;
+    }
+    .hero .kicker { animation-delay: .15s; }
+    .hero .h1wrap, .hero #glhero { animation-delay: .32s; }
+    .hero .tag { animation-delay: .55s; }
+    .hero .sub { animation-delay: .72s; }
+    .hero .cta-row { animation-delay: .92s; }
+    .ribbon { animation-delay: 1.25s; animation-duration: 1s; }
+    @keyframes enter {
+      from { opacity: 0; transform: translateY(1.3rem); }
+      to { opacity: 1; transform: none; }
     }
   }
   .hero .tag { font-size: clamp(1.4rem, 3.4vw, 2.3rem); font-weight: 600; }
@@ -150,6 +177,36 @@
 
   a { color: inherit; }
 
+  /* arrangement demo: chaos until it owns the upper half, then steady */
+  .stage {
+    position: relative; margin: 3rem auto 0; height: 17rem; max-width: 46rem;
+    perspective: 1100px; transform-style: preserve-3d;
+  }
+  .panel, .lap {
+    position: absolute; left: 50%; top: 50%;
+    border-radius: 8px;
+    background: linear-gradient(160deg, #2b2b58 0%, #3d2f70 55%, #5c2f68 100%);
+    border: 1px solid rgba(255, 255, 255, .28);
+    box-shadow: 0 18px 40px rgba(0, 0, 0, .5);
+    transition: transform .55s cubic-bezier(.45, .05, .25, 1), filter .55s;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .stage.steady .panel, .stage.steady .lap { transition-duration: .95s; }
+  .panel { width: clamp(9rem, 26vw, 13rem); aspect-ratio: 3008 / 1692; }
+  .panel span { font-size: 2.1rem; font-weight: 700; color: rgba(255, 255, 255, .85); }
+  .lap { width: clamp(4.6rem, 13vw, 6.6rem); aspect-ratio: 1512 / 982; }
+  .lap::before {
+    content: ""; position: absolute; inset: 0 0 auto 0; height: 14%;
+    background: rgba(255, 255, 255, .78); border-radius: 7px 7px 0 0;
+  }
+  .seam {
+    position: absolute; left: 50%; width: 2px; opacity: 0;
+    background: linear-gradient(#3fd8ff, #ff4fa3);
+    transform: translateX(-50%); transition: opacity .9s .35s;
+  }
+  .stage.steady .seam { opacity: .95; }
+  .demo .caption { margin-top: 2.2rem; }
+
   /* scroll reveal, CSS only, motion-safe */
   @media (prefers-reduced-motion: no-preference) {
     @supports (animation-timeline: view()) {
@@ -168,10 +225,11 @@
 </head>
 <body>
 
-<section class="hero">
+<section class="hero" id="hero">
   <div class="light" aria-hidden="true"></div>
+  <canvas id="glhero" aria-hidden="true"></canvas>
   <p class="kicker">Den Frie Vilje presents</p>
-  <h1>docksteady</h1>
+  <div class="h1wrap"><h1 id="wordmark">docksteady</h1></div>
   <p class="tag">Steady. Beyond belief.</p>
   <p class="lead sub">Two identical monitors. One shared serial.<br>macOS guesses. We don't.</p>
   <div class="cta-row">
@@ -189,6 +247,21 @@
     <p class="lead narrow">Every same-model panel ships the same placeholder serial in its identity
     record. macOS reads it, shrugs, and re-deals your desk on every reconnect.
     You're not arranging it wrong. <strong>It's not you. It's your EDID.</strong></p>
+  </div>
+</section>
+
+<section class="slide demo">
+  <div class="wrap">
+    <p class="kicker">The demo</p>
+    <p class="quoteish">Your desk, most mornings.</p>
+    <div class="stage" id="stage" aria-label="Two displays swapping erratically until they settle side by side, laptop centred underneath" role="img">
+      <div class="panel" id="pA"><span>1</span></div>
+      <div class="panel" id="pB"><span>2</span></div>
+      <div class="lap" id="lap"></div>
+      <div class="seam" id="seam"></div>
+    </div>
+    <p class="lead caption">Erratic on its own. Steady the moment you look at it properly.<br>
+    <strong>That's the product. That's the whole product.</strong></p>
   </div>
 </section>
 
@@ -284,5 +357,181 @@ docksteady init</code>
   or acquired by Apple. Yet.</p>
 </footer>
 
+<script>
+(function () {
+  const stage = document.getElementById("stage");
+  const pA = document.getElementById("pA"), pB = document.getElementById("pB");
+  const lap = document.getElementById("lap"), seam = document.getElementById("seam");
+  const calm = matchMedia("(prefers-reduced-motion: reduce)").matches;
+  let panelW, panelH, lapH, panelY, lapY, swapped = false, steady = false, timer;
+
+  function measure() {
+    panelW = pA.offsetWidth; panelH = pA.offsetHeight; lapH = lap.offsetHeight;
+    panelY = -lapH / 2; lapY = panelY + panelH / 2 + lapH / 2;
+    seam.style.top = (stage.offsetHeight / 2 + panelY - panelH / 2) + "px";
+    seam.style.height = panelH + "px";
+  }
+  function set(el, x, y, z, s, b) {
+    el.style.transform = "translate(calc(-50% + " + x + "px), calc(-50% + " + y + "px))"
+      + " translateZ(" + z + "px) scale(" + s + ")";
+    el.style.filter = "brightness(" + b + ")";
+  }
+  function rest() {
+    set(pA, -panelW / 2, panelY, 0, 1, 1);
+    set(pB, panelW / 2, panelY, 0, 1, 1);
+    set(lap, 0, lapY, 0, 1, 1);
+    pA.style.zIndex = pB.style.zIndex = 1;
+    stage.classList.add("steady");
+  }
+  function tick() {
+    if (steady) return;
+    swapped = !swapped;
+    const front = Math.random() < .5 ? pA : pB;
+    const back = front === pA ? pB : pA;
+    const xa = (swapped ? 1 : -1) * panelW / 2, xb = -xa;
+    const j = () => (Math.random() - .5) * panelW * .2;
+    front.style.zIndex = 3; back.style.zIndex = 1;
+    set(front, j(), panelY + j() * .3, 95, 1.07, 1.18);
+    set(back, j(), panelY + j() * .3, -95, .92, .72);
+    set(lap, (Math.random() - .5) * panelW * .9, lapY + (Math.random() - .5) * 10, 0, 1, .9);
+    setTimeout(function () {
+      if (steady) return;
+      set(pA, xa + j() * .4, panelY, 0, 1, 1);
+      set(pB, xb + j() * .4, panelY, 0, 1, 1);
+    }, 480);
+    timer = setTimeout(tick, 900 + Math.random() * 1900);
+  }
+  measure();
+  addEventListener("resize", function () { measure(); if (steady || calm) rest(); });
+  if (calm) { rest(); return; }
+  rest(); stage.classList.remove("steady");
+  new IntersectionObserver(function (entries) {
+    entries.forEach(function (e) {
+      if (e.isIntersecting) { steady = true; clearTimeout(timer); rest(); }
+      else { steady = false; stage.classList.remove("steady"); clearTimeout(timer); timer = setTimeout(tick, 300); }
+    });
+  }, { rootMargin: "0px 0px -50% 0px" }).observe(stage);
+})();
+</script>
+<script>
+(function () {
+  // volumetric light scattering through the wordmark (GPU Gems 3 ch. 13
+  // as a single pass): the glyphs occlude a marching radial light, so
+  // real shafts stream through the letter gaps and the letters ignite
+  // as the light passes behind them. CSS rays remain the fallback.
+  if (matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+  const hero = document.getElementById("hero");
+  const canvas = document.getElementById("glhero");
+  const h1 = document.getElementById("wordmark");
+  const gl = canvas.getContext("webgl", { alpha: true, antialias: false });
+  if (!gl) return;
+
+  const vsrc = "attribute vec2 aP; varying vec2 vUv;" +
+    "void main(){ vUv = aP * 0.5 + vec2(0.5); vUv.y = 1.0 - vUv.y;" +
+    " gl_Position = vec4(aP, 0.0, 1.0); }";
+  const fsrc = "precision highp float; varying vec2 vUv;" +
+    "uniform sampler2D uOcc; uniform vec2 uLight; uniform float uAspect;" +
+    "const int N = 56;" +
+    "float lum(vec2 p){ vec2 d = (p - uLight) * vec2(uAspect, 1.0);" +
+    "  return exp(-pow(length(d) * 3.0, 2.0)); }" +
+    "void main(){" +
+    "  vec2 dir = (uLight - vUv) / float(N);" +
+    "  vec2 p = vUv; float w = 1.0; float rays = 0.0;" +
+    "  for (int i = 0; i < N; i++) { p += dir;" +
+    "    rays += lum(p) * (1.0 - texture2D(uOcc, p).r) * w * 0.030;" +
+    "    w *= 0.964; }" +
+    "  float o = texture2D(uOcc, vUv).r;" +
+    "  vec3 c1 = vec3(0.247, 0.847, 1.0); vec3 c2 = vec3(0.478, 0.361, 1.0);" +
+    "  vec3 c3 = vec3(1.0, 0.310, 0.639);" +
+    "  vec3 grad = vUv.x < 0.5 ? mix(c1, c2, vUv.x * 2.0)" +
+    "                          : mix(c2, c3, vUv.x * 2.0 - 1.0);" +
+    "  vec2 bd = (vUv - uLight) * vec2(uAspect, 1.0);" +
+    "  float behind = exp(-pow(length(bd) * 2.2, 2.0));" +
+    "  vec3 rayTint = mix(vec3(0.62, 0.72, 1.0), grad, 0.35);" +
+    "  vec3 col = rays * rayTint + o * grad * (0.62 + 1.1 * behind)" +
+    "           + o * vec3(1.0) * behind * 0.55;" +
+    "  float a = clamp(rays * 0.85 + o, 0.0, 1.0);" +
+    "  gl_FragColor = vec4(col * a, a); }";
+  function sh(type, src) {
+    const s = gl.createShader(type); gl.shaderSource(s, src); gl.compileShader(s);
+    if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw gl.getShaderInfoLog(s);
+    return s;
+  }
+  let prog;
+  try {
+    prog = gl.createProgram();
+    gl.attachShader(prog, sh(gl.VERTEX_SHADER, vsrc));
+    gl.attachShader(prog, sh(gl.FRAGMENT_SHADER, fsrc));
+    gl.linkProgram(prog);
+    if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) throw "link";
+  } catch (e) { return; }
+  gl.useProgram(prog);
+  const buf = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+  gl.bufferData(gl.ARRAY_BUFFER,
+    new Float32Array([-1, -1, 3, -1, -1, 3]), gl.STATIC_DRAW);
+  const aP = gl.getAttribLocation(prog, "aP");
+  gl.enableVertexAttribArray(aP);
+  gl.vertexAttribPointer(aP, 2, gl.FLOAT, false, 0, 0);
+  const uOcc = gl.getUniformLocation(prog, "uOcc");
+  const uLight = gl.getUniformLocation(prog, "uLight");
+  const uAspect = gl.getUniformLocation(prog, "uAspect");
+  const tex = gl.createTexture();
+  gl.bindTexture(gl.TEXTURE_2D, tex);
+  [[gl.TEXTURE_WRAP_S], [gl.TEXTURE_WRAP_T]].forEach(function (p) {
+    gl.texParameteri(gl.TEXTURE_2D, p[0], gl.CLAMP_TO_EDGE);
+  });
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+  gl.uniform1i(uOcc, 0);
+  gl.enable(gl.BLEND);
+  gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
+
+  let glyphY = 0.42;
+  function layout() {
+    const dpr = Math.min(devicePixelRatio || 1, 2);
+    const w = hero.offsetWidth, h = hero.offsetHeight;
+    canvas.width = w * dpr; canvas.height = h * dpr;
+    gl.viewport(0, 0, canvas.width, canvas.height);
+    const mask = document.createElement("canvas");
+    mask.width = canvas.width; mask.height = canvas.height;
+    const ctx = mask.getContext("2d");
+    ctx.fillStyle = "#000"; ctx.fillRect(0, 0, mask.width, mask.height);
+    const cs = getComputedStyle(h1);
+    const r = h1.getBoundingClientRect(), hr = hero.getBoundingClientRect();
+    const cx = (r.left - hr.left + r.width / 2) * dpr;
+    const cy = (r.top - hr.top + r.height * 0.44) * dpr;
+    ctx.fillStyle = "#fff";
+    ctx.textAlign = "center"; ctx.textBaseline = "middle";
+    if (cs.letterSpacing !== "normal") ctx.letterSpacing = (parseFloat(cs.letterSpacing) * dpr) + "px";
+    ctx.font = "700 " + (parseFloat(cs.fontSize) * dpr) + "px " + cs.fontFamily;
+    ctx.fillText(h1.textContent, cx, cy);
+    gl.bindTexture(gl.TEXTURE_2D, tex);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.LUMINANCE, gl.LUMINANCE,
+      gl.UNSIGNED_BYTE, mask);
+    glyphY = cy / canvas.height;
+    gl.uniform1f(uAspect, canvas.width / canvas.height);
+  }
+  let raf, visible = true;
+  function frame(t) {
+    const x = 0.5 + 0.46 * Math.sin(t * 0.00035);
+    const y = glyphY - 0.10 + 0.05 * Math.sin(t * 0.0006);
+    gl.uniform2f(uLight, x, y);
+    gl.clearColor(0, 0, 0, 0); gl.clear(gl.COLOR_BUFFER_BIT);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+    if (visible) raf = requestAnimationFrame(frame);
+  }
+  layout();
+  hero.classList.add("gl");
+  addEventListener("resize", layout);
+  new IntersectionObserver(function (es) {
+    es.forEach(function (e) {
+      visible = e.isIntersecting;
+      if (visible) { cancelAnimationFrame(raf); raf = requestAnimationFrame(frame); }
+    });
+  }).observe(hero);
+  raf = requestAnimationFrame(frame);
+})();
+</script>
 </body>
 </html>
